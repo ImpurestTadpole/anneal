@@ -80,6 +80,10 @@ anneal run examples/bracket.json --open
 keeps a 12 mm clearance hole through the arm, and asks for the lightest part that deflects
 0.30 mm or less.
 
+Result at `normal` resolution (included in `examples/runs/bracket/`): **405 g → 108 g (−73 %)**,
+maximum displacement 0.274 mm (limit 0.30), safety factor 2.73, **1.46× stiffer per gram** than the
+solid original. Three passes of the mass search, 24 minutes on a 2-core machine.
+
 ---
 
 ## 3. The spec file
@@ -178,8 +182,9 @@ A failed check prints the fix, for example "Raise objective.volumeFraction".
 
 ```
 model ──► voxelize (fill fractions) ──► anchors, keep-outs, frozen regions
-      ──► SIMP optimization on the voxel grid (hex8 FEM, multigrid-preconditioned CG)
-      ──► smooth surface (marching cubes + Taubin) ──► voxelize the surface again
+      ──► SIMP optimization on the voxel grid (hex8 FEM, multigrid-preconditioned CG,
+          density filter, penalty ramp, then Heaviside projection to sharpen the design)
+      ──► load-path guard ──► smooth surface (marching cubes + Taubin) ──► voxelize the surface again
       ──► as-built re-solve ──► checks ──► report + run record
 ```
 
@@ -188,9 +193,9 @@ model ──► voxelize (fill fractions) ──► anchors, keep-outs, frozen r
 | `kernel.py` | Frames and base shapes (box, sphere, cylinder, pipe), fastener table | Shape kernel (ShapeKernel's role) |
 | `geometry.py` | STL/STEP import, fill-fraction voxelizer | Geometry kernel (PicoGK's role) |
 | `fem.py` | Hex8 voxel FEM, partial volumes, AMG-preconditioned CG, stress | Physics (Anneal.Solve) |
-| `optimize.py` | SIMP, density filter, penalty continuation, OC, multi-load | Optimizer |
+| `optimize.py` | SIMP, density filter, penalty continuation, Heaviside projection, OC, multi-load | Optimizer |
 | `problem.py` | Spec → grid, anchors, guard rails with fixes | Engineering model |
-| `export.py`, `run.py`, `report.py` | Surface, as-built re-solve, checks, mass search, record | Run harness |
+| `export.py`, `run.py`, `report.py` | Load-path guard, surface, as-built re-solve, checks, mass search, record | Run harness |
 | `materials.py` | Material and process data | Library |
 | `validate.py` | 6-check solver gate | Validation |
 
@@ -203,6 +208,13 @@ Design rules carried over from the Phase 0 spike:
   CG near 15–30 iterations. The hierarchy is rebuilt only when CG iterations grow.
 - **Members at least 6 voxels thick** by default (filter radius = 3 voxels), and a correction
   where they are thinner.
+- **Sharpen before you threshold.** After the penalty ramp, a Heaviside projection (sharpness 1 → 4)
+  pushes densities toward 0 or 1, so the optimizer sees almost the part that is exported. On the
+  draft bracket this gave 9 % better stiffness per gram in the exported part than thresholding a
+  grey field.
+- **Never cut a load path.** Before the surface is made, every load anchor must connect to a support
+  through material clearly above the iso level. If not, the level drops a little (at most 0.15);
+  as a last resort, material is added along the cheapest path (Dijkstra). The log says when either happens.
 - **Re-solve the as-built part.** The reported numbers come from the exported surface.
 - **Deterministic.** The same inputs on the same machine give bit-identical results (V5).
 
@@ -215,7 +227,7 @@ Design rules carried over from the Phase 0 spike:
 | V3 cantilever vs Timoshenko | 86.9 % (2 deep), 95.7 % (4 deep), 98.3 % (8 deep) |
 | V4 partial volume vs binary | binary 6.67 % error, partial exact |
 | V5 deterministic reruns | identical SHA-256 |
-| V6 SIMP vs uniform at equal mass | about 89 % lower compliance |
+| V6 SIMP vs uniform at equal mass | about 92 % lower compliance |
 
 Fast tests: `pip install pytest` then `python -m pytest -q`.
 
@@ -231,15 +243,18 @@ Fast tests: `pip install pytest` then `python -m pytest -q`.
 - Material values are typical datasheet figures. Replace them with your own coupon data in `materials.py`.
 - Bolted holes are modelled as fully fixed walls. This is stiffer than a real joint.
 - No overhang or support optimization yet. Check printability in your slicer.
-- Voxel count sets run time: `draft` takes about 2 minutes per pass on 2 cores, `normal` about
-  10, `fine` about 30. More cores help the multigrid setup and sparse operations only a little.
+- Voxel count sets run time. On a 2-core machine: `draft` about 2 minutes per pass, `normal` about
+  10 minutes for the first pass and 4 for each later pass, `fine` about 30. The example bracket with
+  the mass search takes about 20–25 minutes at `normal`. Use `draft` to set up a spec, then `normal`.
+- Use 60 or more iterations for a part you will make. Under 25, the design stays grey and the
+  exported part comes out heavier than the target (Anneal warns you).
 
 ## 7. Next steps on the plan
 
 - PicoGK backend for `kernel.py` and `geometry.py` on Windows and macOS (lattice infill, exact offsets).
 - Lattice grading from grey density, instead of thresholding it.
 - Chrono sidecar for loads from simulated events (drop, landing), as in the method document.
-- Heaviside projection for crisper member edges, and overhang constraints.
+- Overhang constraints, and a minimum-size constraint that holds after thresholding.
 
 Third-party licences: numpy, scipy, scikit-image, matplotlib (BSD-3), pyamg, trimesh (MIT),
 optional cadquery-ocp / OpenCASCADE (LGPL-2.1 with the OCCT exception).
