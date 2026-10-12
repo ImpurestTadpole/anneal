@@ -50,7 +50,9 @@ PROCESSES = {
              "note": "Laser powder bed fusion of metal. Build volume of an EOS M290."},
 }
 
-MAT_KEYS = ["E", "nu", "density", "yield", "minWallMM", "process", "zStrengthFactor", "note", "source"]
+# Ez, nuZ, Gz (optional): stiffness across the layers for print-aware runs (spec physics.anisotropic).
+MAT_KEYS = ["E", "nu", "density", "yield", "minWallMM", "process", "zStrengthFactor", "Ez", "nuZ", "Gz",
+            "note", "source"]
 PROC_KEYS = ["minWallMM", "minHoleMM", "maxOverhangDeg", "supportsAllowed", "enclosedVoids", "buildVolumeMM",
              "buildDirection", "zStrengthFactor", "layerMM", "note"]
 
@@ -166,7 +168,7 @@ def validate_material(m, where="Material"):
     missing = [k for k in need if m.get(k) in (None, "")]
     if missing:
         raise LibraryError(f"{where}: {', '.join(missing)} missing. Give E (MPa), nu, density (g/cm3) and yield (MPa).")
-    for k in need + ["minWallMM", "zStrengthFactor"]:
+    for k in need + ["minWallMM", "zStrengthFactor", "Ez", "nuZ", "Gz"]:
         if m.get(k) not in (None, ""):
             m[k] = _num(m[k], k, where)
         else:
@@ -176,7 +178,10 @@ def validate_material(m, where="Material"):
               ("density", 0.05, 25.0, "g/cm3 (PLA 1.24, aluminium 2.7). kg/m3 ÷ 1000 = g/cm3"),
               ("yield", 0.1, 5000.0, "MPa. psi × 0.006895 = MPa"),
               ("minWallMM", 0.0, 50.0, "mm"),
-              ("zStrengthFactor", 0.05, 1.0, "(layer strength / in-plane strength, 0.05 to 1)")]
+              ("zStrengthFactor", 0.05, 1.0, "(layer strength / in-plane strength, 0.05 to 1)"),
+              ("Ez", 1.0, 1.0e6, "MPa (modulus across the layers). GPa × 1000 = MPa"),
+              ("nuZ", 0.0, 0.499, "(Poisson's ratio for load across the layers, usually 0.2 to 0.4)"),
+              ("Gz", 1.0, 1.0e6, "MPa (shear modulus between layers)")]
     for k, lo, hi, hint in checks:
         if k in m and not lo <= m[k] <= hi:
             raise LibraryError(f"{where}: {k} = {m[k]:g} is outside {lo:g} to {hi:g} {hint}.")
@@ -220,6 +225,7 @@ UNIT = {  # unit -> (quantity, factor to Anneal units)
     "mm": ("length", 1.0), "um": ("length", 1e-3), "µm": ("length", 1e-3), "in": ("length", 25.4), "cm": ("length", 10.0),
 }
 FIELD_WORDS = [  # (field, words that identify a column), first match wins
+    ("Ez", [r"\bz\b.*modulus", r"modulus.*\bz\b", r"vertical.*modulus", r"modulus.*(vertical|xz|zx)"]),
     ("yieldZ", [r"\bz\b.*(yield|strength)", r"(yield|strength).*\bz\b", r"layer.*(strength|adhesion)", r"interlayer",
                 r"vertical.*strength", r"strength.*(vertical|xz|zx)"]),
     ("name", [r"^name$", r"material", r"^grade$", r"product", r"^filament$"]),
@@ -277,12 +283,12 @@ def _value(raw, unit, field):
         if u not in UNIT:
             raise LibraryError(f"unit '{u}' is not known (use GPa, MPa, psi, ksi, g/cm3, kg/m3, lb/in3, mm or in)")
         q, f = UNIT[u]
-        want = {"E": "stress", "yield": "stress", "yieldZ": "stress", "density": "density", "minWallMM": "length"}.get(field)
+        want = {"E": "stress", "Ez": "stress", "Gz": "stress", "yield": "stress", "yieldZ": "stress", "density": "density", "minWallMM": "length"}.get(field)
         if want and q != want:
             raise LibraryError(f"unit '{u}' does not fit {field}")
         return num * f
     # no unit: decide only where it is safe
-    if field == "E":
+    if field in ("E", "Ez"):
         if num >= 500:
             return num            # MPa
         raise LibraryError(f"E = {num:g} has no unit. Write GPa or MPa in the header, for example 'E (GPa)'")
@@ -293,7 +299,7 @@ def _value(raw, unit, field):
 
 def _material_from_fields(fields, where):
     m = {}
-    for k in ("E", "nu", "density", "yield", "minWallMM", "zStrengthFactor"):
+    for k in ("E", "nu", "density", "yield", "minWallMM", "zStrengthFactor", "Ez"):
         if fields.get(k) is not None:
             m[k] = fields[k]
     for k in ("process", "note"):

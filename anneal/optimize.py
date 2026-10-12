@@ -48,9 +48,10 @@ class Filter:
 
 
 def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
-         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX, am=None):
+         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX, am=None, am_order="after", am_continuation=False,
+         probe=None, D=None):
     t_start = time.time()
-    fem = FEM(grid, active, fixed, nu, log=log)
+    fem = FEM(grid, active, fixed, nu, log=log, D=D)
     act = fem.act
     phi = fill[act]
     frz = frozen[act]
@@ -86,23 +87,39 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         th = np.tanh(b * (xt - ETA))
         return (t0 + th) / (t0 + t1), b * (1 - th ** 2) / (t0 + t1)
 
-    def _am(v):                      # optional overhang (AM) filter on the projected design
+    def _am(v):                      # optional overhang (AM) filter, see amfilter.py
         full = np.zeros(grid.nelem)
         full[act] = v
         return grid.to1d(am.forward(grid.to3d(full)))[act]
 
-    def _am_T(d):
+    def _am_T(d, state):
+        am.restore(state)
         full = np.zeros(grid.nelem)
         full[act] = d
         return grid.to1d(am.backward(grid.to3d(full)))[act]
 
     def physical(xd, with_grad=False):
+        """Physical densities, and with_grad a function mapping dF/dxPhys to dF/dx."""
         xt = filt.forward(xd)
-        xp, dxp = project(xt)
-        xp[frz] = 1.0
-        if am is not None:
+        if am is None:
+            xp, dxp = project(xt)
+            xp[frz] = 1.0
+            back = lambda d: filt.backward(d * dxp)
+        elif am_order == "before":   # density filter -> AM filter -> projection
+            xt = xt.copy()
+            xt[frz] = 1.0
+            xa = _am(xt)
+            st = am.state()
+            xp, dxp = project(xa)
+            xp[frz] = 1.0
+            back = lambda d: filt.backward(np.where(frz, 0.0, _am_T(np.where(frz, 0.0, d * dxp), st)))
+        else:                        # density filter -> projection -> AM filter (Langelaar: AM last)
+            xp, dxp = project(xt)
+            xp[frz] = 1.0
             xp = _am(xp)
-        return (xp, dxp) if with_grad else xp
+            st = am.state()
+            back = lambda d: filt.backward(np.where(frz, 0.0, _am_T(d, st)) * dxp)
+        return (xp, back) if with_grad else xp
 
     hist = []
     U = [None] * len(cases)
@@ -126,7 +143,9 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
             elif beta_since >= beta_step and beta[0] < beta_max:
                 beta[0], beta_since = min(beta_max, 2 * beta[0]), 0
             beta_since += 1
-        xPhys, dxp = physical(x, with_grad=True)
+        if am is not None and am_continuation:   # xi0 0.5 -> 0.9 over the first 60 % of the budget
+            am.set_xi0(0.5 + 0.4 * min(1.0, it / max(1.0, 0.6 * iters)))
+        xPhys, back = physical(x, with_grad=True)
         Ee = E0 * phi * (EMIN + xPhys ** p * (1 - EMIN))
         K = fem.assemble(Ee)
         last = fem.cg_iters[-1] if fem.cg_iters else None
@@ -150,14 +169,10 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
             coef = (r / obj) ** (PNORM - 1) * w / c0
             dc = sum(ci * d for ci, d in zip(coef, dce))
         dc = np.minimum(dc, 0.0)
-        if am is not None:   # chain rule through the AM filter (forward state from physical())
-            dvp = _am_T(phi.copy())
-            physical(x)                       # restore the AM cache to this design point
-            dcp = _am_T(dc)
-        else:
-            dcp, dvp = dc, phi
-        dcx = filt.backward(dcp * dxp)
-        dvx = filt.backward(dvp * dxp)
+        dcx = back(dc)
+        dvx = back(phi)
+        if probe is not None:   # verification hook: sensitivities at this design point
+            probe(it, x.copy(), cs.copy(), dcx.copy(), dvx.copy(), physical, p)
 
         # OC: geometric bisection on the multiplier, bracketed around the sensitivity scale
         scale = max(float(np.mean(-dcx[des]) / max(np.mean(dvx[des]), 1e-30)), 1e-300) if des.any() else 1.0

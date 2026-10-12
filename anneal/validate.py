@@ -129,8 +129,95 @@ def check_simp():
         f"{r['stiffer_pct']:.1f}% stiffer, volume error {r['vol_err']:.1e}"
 
 
+def check_buckling():
+    """Clamped column 4 x 4 x 60 voxels under axial load vs Euler; the locking-corrected factor
+    must be conservative (not above theory) and within 3 %."""
+    from .physics import buckling
+    from .run import locking_factor
+    L, a = 60, 4
+    g = Grid((a, a, L), 1.0, (0, 0, 0))
+    base = _nodes_where(g, lambda p: p[:, 2] < 1e-9)
+    top = _nodes_where(g, lambda p: abs(p[:, 2] - L) < 1e-9)
+    fem = FEM(g, np.ones(g.nelem, bool), (3 * base[:, None] + np.arange(3)).ravel(), NU)
+    F = np.zeros(3 * g.nnode)
+    F[3 * top + 2] = -1.0 / top.size
+    Ee = np.full(g.nelem, E0)
+    K = fem.assemble(Ee)
+    u = fem.solve(K, [fem.reduce_load(F)])[0]
+    lam, _ = buckling(fem, K, u, Ee)
+    euler = np.pi ** 2 * E0 * (a ** 4 / 12) / (4 * L ** 2)
+    corr = lam[0] * locking_factor(a)
+    ok = -0.03 <= corr / euler - 1 <= 0.0
+    return "V7 buckling vs Euler (column 4 voxels across)", ok, \
+        f"raw {100 * (lam[0] / euler - 1):+.2f}%, corrected {100 * (corr / euler - 1):+.2f}%"
+
+
+def check_anisotropic():
+    """Print-aware stiffness: bars along and across the layers show Ez and E exactly; with equal
+    strengths the Hill index equals von Mises / yield."""
+    from .physics import transverse_iso_D, hill_index
+    E, Ez = 3500.0, 2400.0
+    errs = []
+    for axis in (0, 2):
+        D = transverse_iso_D(E, Ez, 0.36, 0.30, 900.0, (0, 0, 1))
+        shape = [4, 4, 4]
+        shape[axis] = 12
+        g = Grid(shape, 1.0, (0, 0, 0))
+        nn = np.arange(g.nnode)
+        p = g.node_coords(nn)
+        a1, a2 = [k for k in range(3) if k != axis]
+        fixed = list(3 * nn[p[:, axis] < 1e-9] + axis)
+        o = nn[np.all(p < 1e-9, axis=1)][0]
+        o2 = nn[(p[:, axis] < 1e-9) & (abs(p[:, a1] - 4) < 1e-9) & (p[:, a2] < 1e-9)][0]
+        fixed += [3 * o + a1, 3 * o + a2, 3 * o2 + a2]
+        fem = FEM(g, np.ones(g.nelem, bool), fixed, 0.36, D=D)
+        end = nn[abs(p[:, axis] - 12) < 1e-9]
+        edge = [(abs(p[end, b]) < 1e-9) | (abs(p[end, b] - 4) < 1e-9) for b in (a1, a2)]
+        w = np.where(edge[0] & edge[1], 0.25, np.where(edge[0] | edge[1], 0.5, 1.0))
+        F = np.zeros(3 * g.nnode)
+        F[3 * end + axis] = 10.0 * 16 * w / w.sum()
+        u = fem.expand(fem.solve(fem.assemble(np.full(g.nelem, E)), [fem.reduce_load(F)], rtol=1e-12)[0])
+        app = 10.0 / (u[3 * end + axis].mean() / 12)
+        errs.append(abs(app / (Ez if axis == 2 else E) - 1))
+    rng = np.random.default_rng(0)
+    sig = rng.normal(size=(50, 6)) * 20
+    vm = np.sqrt(0.5 * ((sig[:, 0] - sig[:, 1]) ** 2 + (sig[:, 1] - sig[:, 2]) ** 2 + (sig[:, 2] - sig[:, 0]) ** 2)
+                 + 3 * (sig[:, 3] ** 2 + sig[:, 4] ** 2 + sig[:, 5] ** 2))
+    herr = float(np.abs(hill_index(sig, 50.0, 50.0, (0.3, -0.5, 0.8)) - vm / 50.0).max())
+    ok = max(errs) < 1e-8 and herr < 1e-12
+    return "V8 print-aware stiffness and Hill strength", ok, \
+        f"E error {max(errs):.1e}, Hill vs von Mises {herr:.1e}"
+
+
+def check_overhang_filter():
+    """AM filter: adjoint = finite differences; floating material removed, supported kept."""
+    from .amfilter import AMFilter
+    rng = np.random.default_rng(1)
+    x = rng.uniform(0.05, 1, (7, 6, 8))
+    x[rng.uniform(size=x.shape) < 0.3] = 1e-9
+    f = AMFilter(x.shape)
+    wv = rng.normal(size=x.shape)
+    Fn = lambda z: float((f.forward(z) * wv).sum())
+    Fn(x)
+    gr = f.backward(wv)
+    err = 0.0
+    for _ in range(12):
+        idx = tuple(rng.integers(0, s) for s in x.shape)
+        e = np.zeros_like(x)
+        e[idx] = 1e-6
+        fd = (Fn(x + e) - Fn(x - e)) / 2e-6
+        err = max(err, abs(fd - gr[idx]) / max(abs(fd), 1e-6))
+    b = np.zeros((10, 10, 10))
+    b[2:5, 2:5, 0:4] = 1
+    b[6:9, 6:9, 5:8] = 1
+    y = AMFilter(b.shape).forward(b)
+    ok = err < 1e-4 and y[2:5, 2:5, 0:4].min() > 0.95 and y[6:9, 6:9, 5:8].max() < 0.05
+    return "V9 overhang filter gradient and behaviour", ok, \
+        f"gradient error {err:.1e}, floating block max {y[6:9, 6:9, 5:8].max():.3f}"
+
+
 CHECKS = [check_rigid_body, check_tension, check_cantilever, check_partial_volume,
-          check_determinism, check_simp]
+          check_determinism, check_simp, check_buckling, check_anisotropic, check_overhang_filter]
 
 
 def run_all(log=print):

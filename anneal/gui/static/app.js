@@ -384,11 +384,16 @@ const BODY = {
         ${row("Yield strength, MPa", num("material.yield", m.yield, 'min="0.1" step="any"'))}
         ${row("Minimum wall, mm", num("material.minWallMM", m.minWallMM, 'min="0" step="0.1"'))}
         ${row("Layer strength factor", num("material.zStrengthFactor", m.zStrengthFactor, 'min="0.05" max="1" step="0.05" placeholder="from process"'), "Strength across layers ÷ strength along them. FDM often 0.4 to 0.6.")}
+        ${row("E across the layers (Ez), MPa", num("material.Ez", m.Ez, 'min="1" step="any" placeholder="none"'), "For print-aware runs. From a test or the Z-direction value on the data sheet.")}
+        ${row("Poisson's ratio across layers (nuZ)", num("material.nuZ", m.nuZ, 'min="0" max="0.49" step="0.01" placeholder="= nu"'))}
+        ${row("Shear modulus between layers (Gz), MPa", num("material.Gz", m.Gz, 'min="1" step="any" placeholder="from Ez"'))}
         <div class="row"><input type="text" id="saveMatName" placeholder="Name for your library"><button class="btn" data-save-mat>Save to my library</button></div>`
         : `<p class="help">E ${fmt(m.E)} MPa, yield ${fmt(m.yield)} MPa, ${m.density} g/cm³, min wall ${m.minWallMM ?? 1} mm${m.zStrengthFactor ? `, layer strength ×${m.zStrengthFactor}` : ""}.
             ${esc(m.note || "")}${m.builtIn ? "" : ` <span class="tag mine">My library${m.source ? ": " + esc(m.source) : ""}</span>`}
             <button class="link" data-go="library">Library</button></p>`}
       ${processFields()}
+      ${chk("physics.anisotropic", !!(sp.physics || {}).anisotropic, "Print-aware material (weaker and softer across the layers)",
+        "Uses Ez from the material and the process build direction. Strength is checked with the Hill criterion.")}
       <fieldset><legend>Goal</legend>
         <label class="check"><input type="radio" name="goal" value="mass" ${mass ? "checked" : ""} data-goal><span>Lightest part that meets the limits
           <br><span class="quiet">Anneal tries several amounts of material and keeps the lightest that passes.</span></span></label>
@@ -403,6 +408,9 @@ const BODY = {
         ${row("Maximum displacement, mm", num("limits.maxDisplacementMM", sp.limits.maxDisplacementMM, `min="0" step="any" ${mass ? "required" : ""}`),
           mass ? "Needed for the lightest-part goal." : "Leave empty for no limit.")}
         ${row("Minimum safety factor on yield", num("limits.minSafetyFactor", sp.limits.minSafetyFactor, 'min="0" step="0.1"'))}
+        ${chk("physics.buckling", !!(sp.physics || {}).buckling, "Check buckling of the finished part",
+          "Linear buckling, corrected for the voxel model. Adds about a minute or more per load case.")}
+        ${row("Minimum buckling factor", num("limits.minBucklingFactor", sp.limits.minBucklingFactor, 'min="1" step="0.1" placeholder="2"'), "A value here also turns the buckling check on.")}
       </fieldset>`;
   },
 
@@ -416,6 +424,8 @@ const BODY = {
         ${row("Penalty", num("optimizer.penalty", o.penalty ?? 3, 'min="1" max="5" step="0.25"'), "How hard grey material is punished. 3 is standard.")}
         ${row("Move limit per iteration", num("optimizer.move", o.move ?? 0.2, 'min="0.02" max="0.5" step="0.01"'))}
         ${row("Edge sharpness", num("optimizer.sharpness", o.sharpness ?? 4, 'min="0" max="16" step="1"'), "Heaviside projection. 0 turns it off; above 8 can stall.")}
+        ${chk("optimizer.overhangFilter", !!o.overhangFilter, "Design for printing without supports (45° overhang filter)",
+          "Needs a process with a build direction along X, Y or Z. Bosses and bores you keep may still need support.")}
       </fieldset>
       <fieldset><legend>Load paths</legend>
         ${chk("loadPaths.guard", lp.guard !== false, "Keep every load connected to a support", "Checks the part before the surface is made.")}
@@ -997,6 +1007,8 @@ function regionCentre(r) {
 let LIB = null, IMPORT = null;
 const MAT_FIELDS = [["E", "Young's modulus E, MPa", "number"], ["nu", "Poisson's ratio", "number"], ["density", "Density, g/cm³", "number"],
   ["yield", "Yield strength, MPa", "number"], ["minWallMM", "Minimum wall, mm", "number"], ["zStrengthFactor", "Layer strength factor (0.05 to 1)", "number"],
+  ["Ez", "E across the layers (Ez), MPa", "number"], ["nuZ", "Poisson's ratio across layers (nuZ)", "number"],
+  ["Gz", "Shear modulus between layers (Gz), MPa", "number"],
   ["process", "Process", "process"], ["note", "Note or source", "text"]];
 const PROC_FIELDS = [["minWallMM", "Minimum wall, mm"], ["minHoleMM", "Minimum hole, mm"], ["maxOverhangDeg", "Steepest overhang without support, °"],
   ["zStrengthFactor", "Layer strength factor"], ["layerMM", "Layer height, mm"]];

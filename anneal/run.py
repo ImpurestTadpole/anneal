@@ -18,6 +18,10 @@ from . import report
 
 
 # Measured in validation check V3: hex8 stiffness ratio (exact / voxel model) vs voxels through depth.
+# Overhang filter position and continuation, chosen in the roadmap verification (research/am_tune.py).
+AM_ORDER = "after"
+AM_CONTINUATION = False
+
 LOCKING = [(1.0, 0.70), (2.0, 0.869), (4.0, 0.957), (8.0, 0.983), (16.0, 0.995)]
 
 
@@ -50,7 +54,8 @@ def evaluate(prob, fill, label, log):
                                f"larger freezeMM (for example 3) so material stays where the part is held "
                                f"or loaded, then run again.") from None
         raise
-    fem = FEM(g, active, fixed, prob.material["nu"], log=log)
+    D = getattr(prob, "D", None)
+    fem = FEM(g, active, fixed, prob.material["nu"], log=log, D=D)
     E0 = prob.material["E"]
     K = fem.assemble(E0 * fill[fem.act])
     Us = fem.solve(K, [fem.reduce_load(F[c]) for c in prob.cases], rtol=1e-9)
@@ -62,7 +67,7 @@ def evaluate(prob, fill, label, log):
     solid = fill[fem.act] >= 0.5
     res = {"label": label, "massG": float(fill.sum() * g.h ** 3 * prob.material["density"] / 1000),
            "volumeCM3": float(fill.sum() * g.h ** 3 / 1000), "cases": {}}
-    worst_disp, worst_sig, worst_sz = 0.0, 0.0, 0.0
+    worst_disp, worst_sig, worst_sz, worst_hill = 0.0, 0.0, 0.0, 0.0
     proc = getattr(prob, "process", None)
     bdir = (proc or {}).get("buildDirection")
     u_fields, vm_fields = {}, {}
@@ -79,6 +84,11 @@ def evaluate(prob, fill, label, log):
         if bdir is not None:   # tension across the layers (FDM parts split between layers)
             sz = np.maximum(FEM.normal_stress(fem.stress(u, E0), bdir), 0.0)
             worst_sz = max(worst_sz, float(np.percentile(sz[keep], 99.5)))
+        if D is not None:      # print-aware run: Hill criterion with in-plane and interlayer strength
+            from .physics import hill_index
+            Y = prob.material["yield"]
+            hi = hill_index(fem.stress(u, E0), Y, Y * float(proc.get("zStrengthFactor", 1.0)), bdir)
+            worst_hill = max(worst_hill, float(np.percentile(hi[keep], 99.5)))
         load_disp = {a.name: float(mag[anchor_nodes[a.name]].mean())
                      for a in prob.anchors if a.role == "load" and c in a.loads}
         res["cases"][c] = {"complianceNmm": float(fem.reduce_load(F[c]) @ u_r),
@@ -94,8 +104,36 @@ def evaluate(prob, fill, label, log):
         zf = float(proc.get("zStrengthFactor", 1.0))
         res["peakLayerTensionMPa"] = worst_sz
         res["safetyFactorLayers"] = prob.material["yield"] * zf / worst_sz if worst_sz > 0 else float("inf")
+    if D is not None:
+        res["hillIndex"] = worst_hill
+        res["safetyFactorVonMises"] = res["safetyFactor"]
+        res["safetyFactorHill"] = 1.0 / worst_hill if worst_hill > 0 else float("inf")
+        res["safetyFactor"] = min(res["safetyFactor"], res["safetyFactorHill"])
     res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields}
     return res
+
+
+def buckling_check(prob, fill, lf, log):
+    """Linear buckling factor of the as-built part per load case, times the locking factor lf."""
+    from .physics import buckling
+    g = prob.grid
+    active = prob._connected(fill >= 0.05)
+    fill = np.where(active, fill, 0.0)
+    fixed, F, _ = prob.boundary(active)
+    fem = FEM(g, active, fixed, prob.material["nu"], log=lambda *a: None, D=getattr(prob, "D", None))
+    E0 = prob.material["E"]
+    Ee = E0 * fill[fem.act]
+    K = fem.assemble(Ee)
+    out = {}
+    for c in prob.cases:
+        t = time.time()
+        u = fem.solve(K, [fem.reduce_load(F[c])], rtol=1e-9)[0]
+        lam, _ = buckling(fem, K, u, Ee)
+        raw = float(lam[0]) if lam.size else float("inf")
+        out[c] = {"raw": raw, "corrected": raw * lf, "seconds": time.time() - t}
+        log(f"  buckling, load case {c}: factor {raw * lf:.3g} (raw {raw:.3g} x locking {lf:.3f}), "
+            f"{time.time() - t:.0f} s")
+    return out
 
 
 def save_fields(path, grid, res):
@@ -123,7 +161,8 @@ def checks(prob, built, thick):
                                          f"or use a stiffer material."})
     if "minSafetyFactor" in lim:
         ok = built["safetyFactor"] >= lim["minSafetyFactor"]
-        out.append({"name": "Safety factor on yield", "ok": ok,
+        out.append({"name": "Safety factor on yield" + (" (Hill, print-aware)" if "safetyFactorHill" in built else ""),
+                    "ok": ok,
                     "value": f"{built['safetyFactor']:.2f}", "limit": f"≥ {lim['minSafetyFactor']}",
                     "fix": "" if ok else f"Raise volumeFraction (now {vf}), raise optimizer.minMemberMM so members "
                                          f"get thicker, or reduce the load."})
@@ -134,6 +173,15 @@ def checks(prob, built, thick):
                     "value": f"{100 * (1 - frac):.0f} % of skeleton", "limit": "≥ 75 % (else warning)",
                     "fix": "" if good else f"Displacement was scaled by {1 / built.get('lockingFactor', 1):.3f} to stay "
                                            f"conservative. For a sharper answer, rerun with resolution 'fine'."})
+    if "buckling" in built:
+        bmin = float(lim.get("minBucklingFactor", 2.0))
+        worst = min(v["corrected"] for v in built["buckling"].values())
+        ok = worst >= bmin
+        out.append({"name": "Buckling load factor (linear, corrected for shear locking)", "ok": ok,
+                    "value": ", ".join(f"{c} {v['corrected']:.3g}" for c, v in built["buckling"].items()),
+                    "limit": f"≥ {bmin:g}",
+                    "fix": "" if ok else "Raise volumeFraction or optimizer.minMemberMM so slender members get "
+                                         "thicker, or reduce the compressive load."})
     minwall = prob.material.get("minWallMM", 0)
     if thick.size and minwall and not getattr(prob, "process", None):   # with a process, dfm.py checks walls
         tmin = float(np.percentile(thick, 2)) * prob.grid.h
@@ -191,6 +239,25 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
     fixed, F, info = prob.boundary(prob.active)
     log("  anchor nodes: " + ", ".join(f"{k} {v}" for k, v in info.items()))
     opt = prob.opt
+    phys = prob.spec.get("physics", {}) or {}
+    prob.D = None
+    if phys.get("anisotropic"):
+        from .physics import material_D
+        prob.D, info = material_D(prob.material, prob.process)
+        prob.derived["printAware"] = info
+        log(f"  print-aware material: E {info['E']:g} MPa in the layers, Ez {info['Ez']:g} MPa across "
+            f"(nuZ {info['nuZ']:g}, Gz {info['Gz']:.4g} MPa" + (f"; assumed {', '.join(info['assumed'])}" if info["assumed"] else "") + ")")
+    am_make = None
+    if opt.get("overhangFilter"):
+        from .amfilter import AMFilter, axis_of
+        if not prob.process or not prob.process.get("buildDirection"):
+            raise RuntimeError("optimizer.overhangFilter needs a process with a build direction. Set \"process\": "
+                               "\"FDM\" (or another process) in the spec.")
+        ax, sg = axis_of(prob.process["buildDirection"])
+        am_make = lambda: AMFilter(g.shape, ax, sg, active=g.to3d(prob.active.astype(float)),
+                                   keep=g.to3d(prob.frozen.astype(float)))
+        prob.derived["overhangFilter"] = {"buildDirection": prob.process["buildDirection"], "angleDeg": 45}
+        log(f"  overhang filter on: build direction {prob.process['buildDirection']}, 45 degree limit")
     if int(opt.get("iterations", 80)) < 25:
         log("  WARNING: fewer than 25 iterations leaves the design grey; the exported part will be heavier "
             "than the target. Use 60 or more for a part you will make.")
@@ -206,7 +273,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
                    iters=int(opt.get("iterations", 80)) if x0 is None else max(15, int(opt.get("iterations", 80)) * 2 // 5),
                    r_mm=r_mm, x0=x0,
                    p_final=float(opt.get("penalty", 3.0)), move=float(opt.get("move", 0.2)),
-                   combine=prob.combine, log=log, beta_max=float(opt.get("sharpness", 4.0)))
+                   combine=prob.combine, log=log, beta_max=float(opt.get("sharpness", 4.0)),
+                   D=prob.D, am=am_make() if am_make else None,
+                   am_order=AM_ORDER, am_continuation=AM_CONTINUATION)
         x = res["x"]
         log("Generating the surface")
         f = output_field(prob, x)
@@ -261,6 +330,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
             + ("" if ok else " — no pass met the limit; this is the stiffest"))
     res, x, f, level, mesh, fill_b, built, thick = (best[k] for k in
                                                     ("res", "x", "f", "level", "mesh", "fill_b", "built", "thick"))
+    if phys.get("buckling") or "minBucklingFactor" in prob.limits:
+        log("Buckling check on the as-built part")
+        built["buckling"] = buckling_check(prob, fill_b, built["lockingFactor"], log)
     prob.vf = best["vf"]
     res["all_history"] = [(f"pass {i + 1}: vf {p['vf']:.3f}", p["res"]["history"]) for i, p in enumerate(passes)] \
         if len(passes) > 1 else [("", res["history"])]
