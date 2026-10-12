@@ -1,0 +1,15 @@
+{
+ "name": "plain120",
+ "order": "none",
+ "iters": 120,
+ "continuation": false,
+ "itersRun": 120,
+ "grey": 0.13975694444444445,
+ "unsupported": 0.1033175355450237,
+ "compliance01": 0.014151314544240949,
+ "vol01": 0.2552083333333333,
+ "c_times_v": 0.003611533399311492,
+ "seconds": 520.402482509613,
+ "finalObjective": 0.01739942923950543,
+ "volGrey": 0.25000000000022393
+}

@@ -231,7 +231,24 @@ geometry.
 | `output.report` | true | Write the HTML report. |
 | `output.copyTo` | – | Also copy the part files to this folder. |
 
-### Limits and checks
+### 0.4 options: print-aware material, overhang filter, buckling (all off by default)
+
+Runs without these keys give the same result as 0.3.0 (checked bit for bit, see `VERIFICATION.md`).
+
+```json
+"process": "FDM",
+"material": { "E": 3500, "nu": 0.36, "density": 1.24, "yield": 50, "Ez": 2400, "zStrengthFactor": 0.5 },
+"physics":  { "anisotropic": true, "buckling": true },
+"optimizer": { "iterations": 120, "overhangFilter": true },
+"limits":   { "minBucklingFactor": 2.0 }
+```
+
+| Key | What it does |
+|---|---|
+| `physics.anisotropic` | Print-aware material. Stiffness E in the layers, `Ez` across them (`nuZ` and `Gz` optional; if left out, nuZ = nu and Gz = Ez / (2(1 + nuZ)), and the run says so). Strength is checked with the Hill criterion: in-plane strength = yield, across layers = yield × zStrengthFactor, shear strengths assumed X/√3 and Z/√3. The safety factor is the lower of von Mises and Hill. Needs a process with a build direction. |
+| `optimizer.overhangFilter` | Langelaar's layer-by-layer filter inside the optimizer: no voxel can be denser than its support in the layer below (45° on cubic voxels). The plate is the lowest layer of the design space. Bosses and bores you freeze are kept as asked and may still need support. Needs a build direction along X, Y or Z. Use 100–120 iterations. |
+| `physics.buckling` or `limits.minBucklingFactor` | Linear buckling of the as-built part for each load case. The factor is multiplied by the shear-locking factor so it stays conservative (check V7). Default limit 2.0. Takes from about a minute to several minutes per load case. |
+
 
 | Check | How it is measured |
 |---|---|
@@ -239,6 +256,8 @@ geometry.
 | Safety factor | Material yield / peak von Mises stress (99.5th percentile at element centres, away from the support and load points) |
 | Members ≥ 6 voxels thick | Skeleton of the as-built part. Thinner members are modelled too stiff, so displacement is scaled up by the measured factor (warning, not failure) |
 | Thinnest member vs process | 2nd-percentile member thickness vs the material's minimum wall |
+| Safety factor (Hill, print-aware) | With `physics.anisotropic`: the lower of von Mises and Hill (layer strength = yield × zStrengthFactor) |
+| Buckling load factor | With `physics.buckling`: lowest linear buckling factor per load case × locking factor, vs `minBucklingFactor` (default 2) |
 
 A failed check prints the fix, for example "Raise objective.volumeFraction".
 
@@ -377,22 +396,29 @@ Design rules carried over from the Phase 0 spike:
 | V4 partial volume vs binary | binary 6.67 % error, partial exact |
 | V5 deterministic reruns | identical SHA-256 |
 | V6 SIMP vs uniform at equal mass | about 92 % lower compliance |
+| V7 buckling vs Euler (column 4 voxels across) | raw +3.5 %, corrected −1.0 % (must be −3 % to 0 %) |
+| V8 print-aware stiffness and Hill strength | E and Ez exact; Hill = von Mises when strengths are equal |
+| V9 overhang filter | gradient = finite differences; floating material removed |
 
-Fast tests: `pip install pytest` then `python -m pytest -q` (25 tests, a few minutes).
+Tests: `pip install pytest` then `python -m pytest -q` (45 tests, 15–25 minutes on 2 cores).
+`VERIFICATION.md` lists the release evidence: tests, gate, a bit-for-bit comparison with 0.3.0, and
+independent checks with CalculiX and PrusaSlicer.
 
 ---
 
 ## 7. Limits — read before you print
 
-- Linear elastic, isotropic, small displacement, static loads. No buckling, fatigue, contact,
-  thermal or dynamic analysis.
+- Linear elastic, small displacement, static loads. Isotropic unless `physics.anisotropic` is on.
+  Buckling is linear (eigenvalue) only and opt-in. No fatigue, contact, thermal, impact or
+  large-deflection analysis inside Anneal (see the roadmap for the CalculiX sidecar).
 - Stress is an estimate at element centres. Support and load points have high local stress in any
   linear model, so they are left out of the peak. Check critical parts with an independent analysis.
 - FDM parts are anisotropic. Z strength can be under half the listed yield.
 - Material values are typical datasheet figures. Replace them with your own coupon data in `materials.py`.
 - Bolted holes are modelled as fully fixed walls. This is stiffer than a real joint.
-- Printability checks report; they do not yet steer the optimizer (no overhang constraint inside
-  SIMP). The support volume is the space under overhangs; slicers fill it sparsely.
+- Printability checks report. With `optimizer.overhangFilter` the optimizer also avoids overhangs
+  steeper than 45°. The support volume in the report is the space under overhangs; slicers fill it
+  sparsely (on the example bracket the slicer used about 0.18 of it).
 - Flexible materials (TPU and similar, E under about 200 MPa) are outside the linear model.
 - Voxel count sets run time. On a 2-core machine: `draft` about 2 minutes per pass, `normal` about
   10 minutes for the first pass and 4 for each later pass, `fine` about 30. The example bracket with
@@ -405,8 +431,9 @@ Fast tests: `pip install pytest` then `python -m pytest -q` (25 tests, a few min
 - PicoGK backend for `kernel.py` and `geometry.py` on Windows and macOS (lattice infill, exact offsets).
 - Lattice grading from grey density, instead of thresholding it.
 - Chrono sidecar for loads from simulated events (drop, landing), as in the method document.
-- Overhang constraint inside the optimizer (self-supporting designs), and a minimum-size constraint
-  that holds after thresholding.
+- Minimum-size constraint that holds after thresholding (robust formulation).
+- Slicer in the loop (PrusaSlicer / OrcaSlicer command line) and a CalculiX sidecar for nonlinear checks.
+- Buckling as a constraint inside the optimizer (KS aggregate with MMA).
 
 Third-party licences: numpy, scipy, scikit-image, matplotlib (BSD-3), pyamg, trimesh, three.js (MIT),
 optional pywebview (BSD-3), optional cadquery-ocp / OpenCASCADE (LGPL-2.1 with the OCCT exception).
