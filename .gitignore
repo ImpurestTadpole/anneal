@@ -4,3 +4,5 @@ __pycache__/
 runs/
 *-preview.png
 .pytest_cache/
+build/
+dist/
