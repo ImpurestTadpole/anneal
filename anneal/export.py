@@ -139,8 +139,11 @@ def surface(grid, f, level, upsample=2, smooth=10, log=print):
         if len(keep) < len(parts):
             log(f"  removed {len(parts) - len(keep)} floating fragment(s) under 1 % of the main body")
         mesh = trimesh.util.concatenate(keep)
+    # Rebuild from vertices and faces: after smoothing, splitting and inverting, trimesh's cached
+    # face normals can disagree with the winding. Every later check reads normals, so start clean.
+    mesh = trimesh.Trimesh(np.array(mesh.vertices), np.array(mesh.faces), process=False)
     if mesh.volume < 0:
-        mesh.invert()
+        mesh = trimesh.Trimesh(np.array(mesh.vertices), np.array(mesh.faces)[:, ::-1], process=False)
     return mesh
 
 

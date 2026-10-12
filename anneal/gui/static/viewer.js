@@ -187,6 +187,13 @@ export class Viewer {
     const d = this.size * 1.9;
     const dirs = { iso: [1, -1.25, 0.85], front: [0, -1, 0.0001], top: [0.0001, -0.0001, 1], right: [1, 0, 0.0001], fit: null };
     let v = dirs[kind];
+    if (kind === "under") {   // look up at the part from below its build plate
+      const B = new THREE.Vector3(...(this.plateDir || [0, 0, 1])).normalize();
+      const x = Math.abs(B.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      x.sub(B.clone().multiplyScalar(x.dot(B))).normalize();
+      const y = new THREE.Vector3().crossVectors(B, x);
+      v = x.multiplyScalar(0.9).add(y.multiplyScalar(-1.1)).add(B.clone().multiplyScalar(-0.9)).toArray();
+    }
     if (!v) v = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).normalize().toArray();
     const dir = new THREE.Vector3(...v).normalize();
     this.controls.target.copy(c);
@@ -253,6 +260,49 @@ export class Viewer {
   }
 
   resetShape(which) { this.deform(which, null, 0); }
+
+  paintOverhang(which, b, maxDeg) {
+    // faces steeper than maxDeg from vertical (facing down) need support; faces flat on the plate do not
+    const m = this.meshes[which]; if (!m) return null;
+    const p = m.geometry.attributes.position.array, col = m.geometry.attributes.color.array;
+    const B = new THREE.Vector3(...b).normalize();
+    let hmin = Infinity;
+    for (let i = 0; i < p.length; i += 3) hmin = Math.min(hmin, p[i] * B.x + p[i + 1] * B.y + p[i + 2] * B.z);
+    const tol = this.size * 0.004;
+    const need = new THREE.Color(cssColor("--warn")), plate = new THREE.Color(0x3b4b57), ok = new THREE.Color(0xb9c1c7);
+    const a = new THREE.Vector3(), c = new THREE.Vector3(), d = new THREE.Vector3(), n = new THREE.Vector3();
+    let needArea = 0, total = 0, plateArea = 0;
+    const lim = Math.sin(THREE.MathUtils.degToRad(Math.min(90, maxDeg)));
+    for (let f = 0; f < p.length / 9; f++) {
+      const o = 9 * f;
+      a.set(p[o], p[o + 1], p[o + 2]); c.set(p[o + 3], p[o + 4], p[o + 5]); d.set(p[o + 6], p[o + 7], p[o + 8]);
+      n.subVectors(c, a).cross(d.clone().sub(a));
+      const area = n.length() / 2; total += area;
+      if (area === 0) continue;
+      n.normalize();
+      const nb = n.dot(B), h = (a.dot(B) + c.dot(B) + d.dot(B)) / 3;
+      let k = ok;
+      if (nb < -0.98 && h - hmin < tol) { k = plate; plateArea += area; }
+      else if (maxDeg < 90 && nb < 0 && -nb > lim + 1e-9) { k = need; needArea += area; }
+      for (let j = 0; j < 3; j++) { const q = o + 3 * j; col[q] = k.r; col[q + 1] = k.g; col[q + 2] = k.b; }
+    }
+    m.geometry.attributes.color.needsUpdate = true;
+    return { needArea, total, plateArea };
+  }
+
+  setPlate(b) {
+    // turn the floor grid so it lies under the part, across the build direction
+    if (!this.grid || !this.box) return;
+    const B = new THREE.Vector3(...(b || [0, 0, 1])).normalize();
+    this.plateDir = B.toArray();
+    this.grid.rotation.set(0, 0, 0);
+    this.grid.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), B);
+    const pts = [];
+    for (const x of [this.box.min.x, this.box.max.x]) for (const y of [this.box.min.y, this.box.max.y])
+      for (const z of [this.box.min.z, this.box.max.z]) pts.push(new THREE.Vector3(x, y, z).dot(B));
+    const c = this.box.getCenter(new THREE.Vector3());
+    this.grid.position.copy(c).add(B.clone().multiplyScalar(Math.min(...pts) - c.dot(B) - 0.002 * this.size));
+  }
 
   // ---- overlays ------------------------------------------------------------
   clearOverlay() {

@@ -62,7 +62,9 @@ def evaluate(prob, fill, label, log):
     solid = fill[fem.act] >= 0.5
     res = {"label": label, "massG": float(fill.sum() * g.h ** 3 * prob.material["density"] / 1000),
            "volumeCM3": float(fill.sum() * g.h ** 3 / 1000), "cases": {}}
-    worst_disp, worst_sig = 0.0, 0.0
+    worst_disp, worst_sig, worst_sz = 0.0, 0.0, 0.0
+    proc = getattr(prob, "process", None)
+    bdir = (proc or {}).get("buildDirection")
     u_fields, vm_fields = {}, {}
     for c, u_r in zip(prob.cases, Us):
         u = fem.expand(u_r)
@@ -72,8 +74,11 @@ def evaluate(prob, fill, label, log):
         vm_full = np.zeros(g.nelem, np.float32)
         vm_full[fem.act] = vm
         vm_fields[c] = vm_full
-        pool = vm[solid & ~near] if (solid & ~near).any() else vm
-        peak = float(np.percentile(pool, 99.5))
+        keep = solid & ~near if (solid & ~near).any() else np.ones(vm.size, bool)
+        peak = float(np.percentile(vm[keep], 99.5))
+        if bdir is not None:   # tension across the layers (FDM parts split between layers)
+            sz = np.maximum(FEM.normal_stress(fem.stress(u, E0), bdir), 0.0)
+            worst_sz = max(worst_sz, float(np.percentile(sz[keep], 99.5)))
         load_disp = {a.name: float(mag[anchor_nodes[a.name]].mean())
                      for a in prob.anchors if a.role == "load" and c in a.loads}
         res["cases"][c] = {"complianceNmm": float(fem.reduce_load(F[c]) @ u_r),
@@ -85,6 +90,10 @@ def evaluate(prob, fill, label, log):
     res["maxDisplacementMM"] = worst_disp
     res["peakStressMPa"] = worst_sig
     res["safetyFactor"] = prob.material["yield"] / worst_sig if worst_sig > 0 else float("inf")
+    if bdir is not None:
+        zf = float(proc.get("zStrengthFactor", 1.0))
+        res["peakLayerTensionMPa"] = worst_sz
+        res["safetyFactorLayers"] = prob.material["yield"] * zf / worst_sz if worst_sz > 0 else float("inf")
     res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields}
     return res
 
@@ -126,7 +135,7 @@ def checks(prob, built, thick):
                     "fix": "" if good else f"Displacement was scaled by {1 / built.get('lockingFactor', 1):.3f} to stay "
                                            f"conservative. For a sharper answer, rerun with resolution 'fine'."})
     minwall = prob.material.get("minWallMM", 0)
-    if thick.size and minwall:
+    if thick.size and minwall and not getattr(prob, "process", None):   # with a process, dfm.py checks walls
         tmin = float(np.percentile(thick, 2)) * prob.grid.h
         ok = tmin >= minwall
         out.append({"name": "Thinnest member vs process minimum wall", "ok": ok,
@@ -284,6 +293,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         except Exception as e:
             log(f"  original model not evaluated: {e}")
     chk = checks(prob, built, thick)
+    from .dfm import assess
+    dfm_checks, dfm_summary = assess(prob, mesh, fill_b, built, thick)
+    chk += dfm_checks
     for c in chk:
         log(f"  [{'WARN' if c.get('warn') else 'PASS' if c['ok'] else 'FAIL'}] {c['name']}: {c['value']} (limit {c['limit']})"
             + (f" — {c['fix']}" if c["fix"] else ""))
@@ -304,6 +316,8 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         "results": {"optimized": {k: v for k, v in built.items() if not k.startswith("_")},
                     "original": {k: v for k, v in original.items() if not k.startswith("_")} if original else None},
         "checks": chk,
+        "process": prob.process,
+        "dfm": dfm_summary,
         "history": history_record,
         "outputs": {os.path.basename(p): _sha(p) for p in files},
         "totalSeconds": time.time() - t0,

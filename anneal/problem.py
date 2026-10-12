@@ -15,7 +15,7 @@ from scipy import ndimage
 from .fem import Grid
 from .geometry import load_mesh, voxel_fill
 from .kernel import (Frame, Box, Cylinder, Union, make_region, fill_fraction, FASTENERS)
-from .materials import get_material
+from .materials import get_material, get_process
 
 RESOLUTION = {"draft": 15000, "normal": 40000, "fine": 90000}
 MIN_FILL = 0.05
@@ -128,6 +128,7 @@ class Problem:
         self.base = os.path.dirname(os.path.abspath(spec_path)) if spec_path else os.getcwd()
         self.name = spec.get("name") or (os.path.splitext(os.path.basename(spec_path))[0] if spec_path else "part")
         self.material = get_material(spec.get("material", "AlSi10Mg-LPBF"))
+        self.process = get_process(spec.get("process"), self.material)
         obj = spec.get("objective", {})
         self.vf = float(obj.get("volumeFraction", 0.3))
         if not 0.03 <= self.vf <= 0.95:

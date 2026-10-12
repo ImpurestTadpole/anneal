@@ -16,7 +16,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const STEPS = [
   { key: "model", title: "Model and design space" },
   { key: "anchors", title: "Supports and loads" },
-  { key: "goal", title: "Material and goal" },
+  { key: "goal", title: "Material, process and goal" },
   { key: "settings", title: "Optimizer, load paths and output" },
   { key: "run", title: "Check and run" },
   { key: "result", title: "Result" },
@@ -34,7 +34,7 @@ const FORMATS = ["stl", "3mf", "obj", "ply", "glb"];
 const S = {
   page: "home", project: null, spec: null, gui: null, open: 0, arm: null,
   pickMode: "auto", patchR: null, job: null, check: null, runs: [], run: null,
-  view: { mode: "shape", deform: 0, case: null, ghost: false }, fields: {}, materials: {}, version: "",
+  view: { mode: "shape", deform: 0, case: null, ghost: false }, fields: {}, materials: {}, processes: {}, version: "",
 };
 let viewer = null;
 
@@ -144,10 +144,13 @@ function go(page) {
   $("#home").hidden = page !== "home";
   $("#workbench").hidden = page !== "work";
   $("#history").hidden = page !== "history";
+  $("#library").hidden = page !== "library";
   $("#navHome").classList.toggle("on", page === "home");
   $("#navHistory").classList.toggle("on", page === "history");
+  $("#navLibrary").classList.toggle("on", page === "library");
   if (page === "home") loadHome();
   if (page === "history") loadHistory();
+  if (page === "library") loadLibrary();
   if (page === "work") viewer?.resize();
   crumb();
 }
@@ -159,7 +162,7 @@ function crumb() {
 
 async function loadHome() {
   const st = await api("/api/state");
-  S.materials = st.materials; S.version = st.version;
+  S.materials = st.materials; S.processes = st.processes; S.version = st.version;
   $("#wsPath").textContent = `Projects are saved in ${st.workspace}`;
   const ul = $("#projectList");
   ul.innerHTML = st.projects.length ? st.projects.map(p => `
@@ -179,7 +182,13 @@ async function upload(file) {
   } catch (e) { toast(e.message, 8000); }
 }
 
+async function refreshLib() {
+  const st = await api("/api/state");
+  S.materials = st.materials; S.processes = st.processes;
+}
+
 async function openProject(id, info) {
+  await refreshLib();
   const p = info || await api(`/api/projects/${encodeURIComponent(id)}`);
   S.project = p; S.runs = p.runs; S.run = null; S.check = null; S.fields = {}; S.job = null; S.arm = null;
   S.spec = p.spec || defaultSpec(p);
@@ -204,6 +213,34 @@ async function openProject(id, info) {
   render();
 }
 
+// ------------------------------------------------------------------ process
+function matNow() { return typeof S.spec.material === "string" ? S.materials[S.spec.material] || {} : S.spec.material || {}; }
+function procName() {
+  const sp = S.spec.process;
+  if (sp === "none") return null;
+  const n = (sp && typeof sp === "object") ? sp.name : (typeof sp === "string" ? sp : null);
+  return n || matNow().process || null;
+}
+function effProcess() {
+  const name = procName();
+  if (!name || !S.processes[name]) return null;
+  const p = { ...S.processes[name] };
+  if (matNow().zStrengthFactor) p.zStrengthFactor = matNow().zStrengthFactor;
+  if (S.spec.process && typeof S.spec.process === "object") for (const [k, v] of Object.entries(S.spec.process)) if (k !== "name") p[k] = v;
+  p.name = name;
+  return p;
+}
+const AXES = { "+Z": [0, 0, 1], "-Z": [0, 0, -1], "+X": [1, 0, 0], "-X": [-1, 0, 0], "+Y": [0, 1, 0], "-Y": [0, -1, 0] };
+function axisName(v) {
+  for (const [k, a] of Object.entries(AXES)) if (a.every((x, i) => Math.abs(x - v[i]) < 1e-6)) return k;
+  return v.map(x => (+x).toFixed(2)).join(", ");
+}
+function setProc(key, value) {
+  let sp = S.spec.process;
+  if (!sp || typeof sp !== "object") sp = S.spec.process = sp && sp !== "none" ? { name: sp } : {};
+  if (value === undefined) delete sp[key]; else sp[key] = value;
+}
+
 // ------------------------------------------------------------------ panel
 function stepSummary(k) {
   const sp = S.spec, p = S.project;
@@ -213,7 +250,7 @@ function stepSummary(k) {
     return `${n("fixed")} support${n("fixed") === 1 ? "" : "s"}, ${n("load")} load${n("load") === 1 ? "" : "s"}`;
   }
   if (k === "goal") {
-    const m = typeof sp.material === "string" ? sp.material : "Custom";
+    const m = (typeof sp.material === "string" ? sp.material : "Custom") + (procName() ? `, ${procName()}` : "");
     return sp.objective.minimise === "mass" ? `${m}, lightest within ${sp.limits.maxDisplacementMM ?? "?"} mm` : `${m}, keep ${Math.round(100 * sp.objective.volumeFraction)} %`;
   }
   if (k === "settings") return `${sp.optimizer.iterations} iterations, ${sp.output.formats.map(f => f.toUpperCase()).join(" + ")}`;
@@ -239,6 +276,35 @@ function render() {
 const num = (bind, val, attrs = "") => `<input type="number" data-bind="${bind}" value="${val ?? ""}" ${attrs}>`;
 const row = (label, ctrl, help) => `<label class="row"><span>${label}</span>${ctrl}</label>${help ? `<p class="help">${help}</p>` : ""}`;
 const chk = (bind, on, label, help, attrs = "") => `<label class="check"><input type="checkbox" data-bind="${bind}" data-kind="bool" ${on ? "checked" : ""} ${attrs}><span>${label}${help ? `<br><span class="quiet">${help}</span>` : ""}</span></label>`;
+
+function processFields() {
+  const p = effProcess(), sp = S.spec.process;
+  const ov = sp && typeof sp === "object" ? sp : {};
+  const sel = sp === "none" ? "__none" : (ov.name || (typeof sp === "string" ? sp : ""));
+  const pv = (k, v) => ov[k] !== undefined ? ov[k] : v;
+  const b = p ? p.buildDirection : [0, 0, 1];
+  const bv = p ? p.buildVolumeMM : [0, 0, 0];
+  const matProc = matNow().process;
+  return `<fieldset><legend>Process and printability</legend>
+    <p class="help">The process sets the printability (DFM) checks of each run. Values you change here apply to this project only.</p>
+    ${row("Process", `<select id="procSel">
+      <option value="" ${sel === "" ? "selected" : ""}>${matProc ? `From the material (${esc(matProc)})` : "From the material (none set)"}</option>
+      ${Object.keys(S.processes).map(k => `<option ${sel === k ? "selected" : ""}>${esc(k)}</option>`).join("")}
+      <option value="__none" ${sel === "__none" ? "selected" : ""}>None (no printability checks)</option></select>`)}
+    ${p ? `
+      ${row("Build direction (up)", `<select id="procDir">${Object.keys(AXES).map(k => `<option ${axisName(b) === k ? "selected" : ""}>${k}</option>`).join("")}
+        ${Object.keys(AXES).includes(axisName(b)) ? "" : `<option selected>${axisName(b)}</option>`}</select>`)}
+      ${row("Steepest overhang without support, ° from vertical", `<input type="number" data-proc="maxOverhangDeg" value="${p.maxOverhangDeg}" min="0" max="90" step="1">`, "90 means the process needs no support (powder beds).")}
+      ${chk("__p.supportsAllowed", p.supportsAllowed !== false, "Supports are allowed", "", 'data-proc-bool="supportsAllowed"')}
+      ${row("Closed cavities", `<select data-proc="enclosedVoids">${[["allow", "Allowed"], ["warn", "Warn"], ["fail", "Not allowed (trapped powder)"]].map(([v, t]) => `<option value="${v}" ${p.enclosedVoids === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
+      ${row("Layer strength factor", `<input type="number" data-proc="zStrengthFactor" value="${p.zStrengthFactor}" min="0.05" max="1" step="0.05">`, "Across-layer strength ÷ in-plane strength. Used for the layer-strength check.")}
+      ${row("Minimum wall, mm", `<input type="number" data-proc="minWallMM" value="${p.minWallMM}" min="0" step="0.1">`)}
+      ${row("Minimum hole, mm", `<input type="number" data-proc="minHoleMM" value="${p.minHoleMM}" min="0" step="0.1">`)}
+      <div class="row wide"><span class="quiet">Build volume x, y, z (mm)</span><div class="xyz">${[0, 1, 2].map(i => `<input type="number" data-proc-vol="${i}" value="${bv[i]}" min="1" step="1">`).join("")}</div></div>
+      <div class="btns"><button class="btn" data-view="print">Show printability</button>
+        ${Object.keys(ov).some(k => k !== "name") ? `<button class="btn" data-proc-reset>Use the process values again</button>` : ""}</div>` : ""}
+  </fieldset>`;
+}
 
 const BODY = {
   model() {
@@ -308,15 +374,21 @@ const BODY = {
     const mass = sp.objective.minimise === "mass";
     return `
       ${row("Material", `<select data-bind="material" data-kind="mat" data-rerender>
-        ${Object.keys(mats).map(k => `<option ${sp.material === k ? "selected" : ""}>${k}</option>`).join("")}
-        <option value="__custom" ${custom ? "selected" : ""}>Custom…</option></select>`)}
+        <optgroup label="Built in">${Object.keys(mats).filter(k => mats[k].builtIn).map(k => `<option ${sp.material === k ? "selected" : ""}>${esc(k)}</option>`).join("")}</optgroup>
+        ${Object.keys(mats).some(k => !mats[k].builtIn) ? `<optgroup label="My library">${Object.keys(mats).filter(k => !mats[k].builtIn).map(k => `<option ${sp.material === k ? "selected" : ""}>${esc(k)}</option>`).join("")}</optgroup>` : ""}
+        <option value="__custom" ${custom ? "selected" : ""}>Custom (this project only)…</option></select>`)}
       ${custom ? `
         ${row("Young's modulus E, MPa", num("material.E", m.E, 'min="1" step="any"'))}
         ${row("Poisson's ratio", num("material.nu", m.nu, 'min="0" max="0.49" step="0.01"'))}
         ${row("Density, g/cm³", num("material.density", m.density, 'min="0.01" step="any"'))}
         ${row("Yield strength, MPa", num("material.yield", m.yield, 'min="0.1" step="any"'))}
-        ${row("Minimum wall, mm", num("material.minWallMM", m.minWallMM, 'min="0" step="0.1"'))}`
-        : `<p class="help">E ${fmt(m.E)} MPa, yield ${fmt(m.yield)} MPa, ${m.density} g/cm³, min wall ${m.minWallMM} mm. ${esc(m.note || "")}</p>`}
+        ${row("Minimum wall, mm", num("material.minWallMM", m.minWallMM, 'min="0" step="0.1"'))}
+        ${row("Layer strength factor", num("material.zStrengthFactor", m.zStrengthFactor, 'min="0.05" max="1" step="0.05" placeholder="from process"'), "Strength across layers ÷ strength along them. FDM often 0.4 to 0.6.")}
+        <div class="row"><input type="text" id="saveMatName" placeholder="Name for your library"><button class="btn" data-save-mat>Save to my library</button></div>`
+        : `<p class="help">E ${fmt(m.E)} MPa, yield ${fmt(m.yield)} MPa, ${m.density} g/cm³, min wall ${m.minWallMM ?? 1} mm${m.zStrengthFactor ? `, layer strength ×${m.zStrengthFactor}` : ""}.
+            ${esc(m.note || "")}${m.builtIn ? "" : ` <span class="tag mine">My library${m.source ? ": " + esc(m.source) : ""}</span>`}
+            <button class="link" data-go="library">Library</button></p>`}
+      ${processFields()}
       <fieldset><legend>Goal</legend>
         <label class="check"><input type="radio" name="goal" value="mass" ${mass ? "checked" : ""} data-goal><span>Lightest part that meets the limits
           <br><span class="quiet">Anneal tries several amounts of material and keeps the lightest that passes.</span></span></label>
@@ -411,6 +483,7 @@ const BODY = {
       const co = Object.values(g.cases).reduce((a, c) => a + c.complianceNmm, 0), cb = Object.values(o.cases).reduce((a, c) => a + c.complianceNmm, 0);
       spg = (co * g.massG) / (cb * o.massG);
     }
+    const procNote = rec.process ? `<p class="help">Checked for ${esc(rec.process.name)}, built along ${esc(rec.dfm?.buildDirection || "+Z")}.</p>` : "";
     const files = r.files.filter(f => /-optimized\.(stl|3mf|obj|ply|glb|off)$/.test(f));
     const base = `/api/projects/${encodeURIComponent(S.project.id)}/runs/${r.id}/`;
     const hist = r.hist || {};
@@ -423,6 +496,7 @@ const BODY = {
       </div>
       <ul class="checks">${rec.checks.map(c => `<li><span class="pill ${c.warn ? "warn" : c.ok ? "ok" : "bad"}">${c.warn ? "WARN" : c.ok ? "PASS" : "FAIL"}</span>
         <span>${esc(c.name)}: ${esc(c.value)} <span class="quiet">(${esc(c.limit)})</span>${c.fix ? `<br><span class="fix">${esc(c.fix)}</span>` : ""}</span></li>`).join("")}</ul>
+      ${procNote}
       <div class="btns">${files.map(f => `<a class="btn" href="${base}${encodeURIComponent(f)}?download=1">Download ${f.split(".").pop().toUpperCase()}</a>`).join("")}
         ${r.files.includes("report.html") ? `<a class="btn" href="${base}report.html" target="_blank" rel="noopener">Open report</a>` : ""}
         <button class="btn" data-reveal="${esc(r.dir)}">Open folder</button></div>
@@ -430,6 +504,10 @@ const BODY = {
         <label class="check"><input type="checkbox" data-star ${hist.star ? "checked" : ""}><span>Star this run</span></label>
         <textarea data-note placeholder="What did you change, what did you print, how did it test?" style="min-height:70px">${esc(hist.note || "")}</textarea>
       </fieldset>
+      ${rec.dfm && rec.dfm.bestDirection && rec.dfm.bestDirection !== rec.dfm.buildDirection ? `
+        <p class="help">Printability: building along ${rec.dfm.bestDirection} instead of ${rec.dfm.buildDirection} gives
+          ${fmt(rec.dfm.directions[rec.dfm.bestDirection].overhangMM2)} mm² of overhang instead of ${fmt(rec.dfm.overhangAreaMM2)} mm².</p>
+        <div class="btns"><button class="btn" data-best-dir="${rec.dfm.bestDirection}">Build along ${rec.dfm.bestDirection}</button></div>` : ""}
       <div class="btns"><button class="btn" data-reuse>Use this run's settings</button></div>
       <p class="help">Takes material, goal, limits, optimizer, load-path and output settings from this run. Supports and loads stay as they are.</p>
       <p class="help">${rec.passes.length} pass${rec.passes.length > 1 ? "es" : ""}: ${rec.passes.map(p => `${Math.round(100 * p.volumeFraction)} % gives ${fmt(p.massG)} g, ${fmt(p.maxDisplacementMM)} mm`).join("; ")}. ${fmt(rec.totalSeconds / 60, 2)} min.</p>`;
@@ -595,7 +673,24 @@ function wire() {
     if (d.stop !== undefined && S.job) { await post(`/api/jobs/${S.job.id}/cancel`, {}); toast("Stopping after this iteration…"); return; }
     if (d.reveal) return post("/api/reveal", { path: d.reveal }).catch(e => toast(e.message));
     if (d.reuse !== undefined) return reuse(S.run.spec);
-    if (d.view) { S.view.mode = d.view; return refreshView(); }
+    if (d.saveMat !== undefined) return saveCustomMaterial();
+    if (d.procReset !== undefined) { const n = S.spec.process?.name; S.spec.process = n ? { name: n } : undefined; save(); return render(); }
+    if (d.bestDir) { setProc("buildDirection", AXES[d.bestDir]); S.view.mode = "print"; save(); toast(`Build direction set to ${d.bestDir}. Optimize again to update the checks.`); return render(); }
+    if (d.libNew) return libEditor(d.libNew, null);
+    if (d.libEdit) return libEditor(d.libKind, d.libEdit, false);
+    if (d.libCopy) return libEditor(d.libKind, d.libCopy, true);
+    if (d.libDel) return libDelete(d.libKind, d.libDel);
+    if (d.libSave) return libSave(d.libSave);
+    if (d.libCancel !== undefined) { $("#libEdit").innerHTML = ""; return; }
+    if (d.impSave !== undefined) return importSave();
+    if (d.impCancel !== undefined) { IMPORT = null; $("#libImportBox").innerHTML = ""; return; }
+    if (d.view) {
+      const entering = d.view === "print" && S.view.mode !== "print";
+      S.view.mode = d.view;
+      await refreshView();
+      if (entering) viewer.view("under");   // overhangs face down: show them
+      return;
+    }
     if (d.cam) return viewer?.view(d.cam);
     if (d.hstar) return histStar(d.hstar, t);
     if (d.hopen) return histOpen(d.hopen);
@@ -604,6 +699,25 @@ function wire() {
   document.addEventListener("change", ev => {
     const el = ev.target;
     if (el.id === "fileInput" || el.id === "fileInput2") return upload(el.files[0]);
+    if (el.id === "libImport") return importFile(el.files[0]).finally(() => { el.value = ""; });
+    if (el.id === "procSel") {
+      S.spec.process = el.value === "__none" ? "none" : (el.value ? { name: el.value } : undefined);
+      save(); return render();
+    }
+    if (el.id === "procDir") {
+      setProc("buildDirection", AXES[el.value]); save(); render();
+      if (S.view.mode === "print") setTimeout(() => viewer.view("under"), 0);
+      return;
+    }
+    if (el.dataset.proc) {
+      const k = el.dataset.proc, v = el.tagName === "SELECT" ? el.value : (el.value === "" ? undefined : +el.value);
+      setProc(k, v); save(); refreshHeads(); return refreshView();
+    }
+    if (el.dataset.procBool) { setProc(el.dataset.procBool, el.checked); save(); return refreshView(); }
+    if (el.dataset.procVol !== undefined) {
+      const p = effProcess(); const v = [...p.buildVolumeMM]; v[+el.dataset.procVol] = +el.value;
+      setProc("buildVolumeMM", v); save(); return;
+    }
     if (el.id === "pickMode") { S.pickMode = el.value; return render(); }
     if (el.id === "patchR") { S.patchR = el.value ? +el.value : null; return; }
     if (el.id === "caseShow" || el.id === "caseSel") { S.view.case = el.value; return render(); }
@@ -808,6 +922,26 @@ async function refreshView() {
   // colour
   const mode = S.view.mode;
   let field = null, legend = null;
+  const proc = effProcess();
+  const bdir = proc ? proc.buildDirection : [0, 0, 1];
+  viewer.setPlate(bdir);
+  if (mode === "print") {
+    viewer.resetShape(which);
+    const maxDeg = proc ? proc.maxOverhangDeg : 45;
+    const st = viewer.paintOverhang(which, bdir, maxDeg);
+    document.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === mode));
+    const lg = $("#legend"); lg.hidden = false;
+    $("#legendTitle").textContent = `Printability, building along ${axisName(bdir)}`;
+    lg.querySelector(".lbar").style.display = "none"; lg.querySelector(".lv").style.display = "none";
+    let rows = lg.querySelector(".rows"); if (!rows) { rows = document.createElement("div"); rows.className = "rows"; lg.appendChild(rows); }
+    rows.innerHTML = `<div><span class="swatch" style="background:var(--warn)"></span>Needs support (steeper than ${fmt(maxDeg)}° from vertical)</div>
+      <div><span class="swatch" style="background:#3b4b57"></span>On the build plate</div>
+      <div class="quiet">${proc ? esc(proc.name) : "No process set: FDM-like 45°"}</div>`;
+    status(`${which === "model" ? "Original part" : "Optimized part"}: ${fmt(st.needArea)} mm² needs support (${fmt(100 * st.needArea / st.total, 2)} % of the surface).`);
+    $("#ghostTool").hidden = which !== "result"; $("#caseTool").hidden = true;
+    return;
+  }
+  { const lg = $("#legend"); lg.querySelector(".lbar").style.display = ""; lg.querySelector(".lv").style.display = ""; const r = lg.querySelector(".rows"); if (r) r.remove(); }
   if (mode !== "shape" || S.view.deform > 0) {
     const pid = encodeURIComponent(S.project.id);
     if (which === "result") field = await getField(`run:${S.run.id}:${caseNow}`, `/api/projects/${pid}/field/optimized?run=${S.run.id}&case=${encodeURIComponent(caseNow)}`);
@@ -857,6 +991,136 @@ function regionCentre(r) {
   if (r.from) return r.from.map((v, i) => (v + r.to[i]) / 2);
   if (r.min) return r.min.map((v, i) => (v + r.max[i]) / 2);
   return null;
+}
+
+// ------------------------------------------------------------------ library
+let LIB = null, IMPORT = null;
+const MAT_FIELDS = [["E", "Young's modulus E, MPa", "number"], ["nu", "Poisson's ratio", "number"], ["density", "Density, g/cm³", "number"],
+  ["yield", "Yield strength, MPa", "number"], ["minWallMM", "Minimum wall, mm", "number"], ["zStrengthFactor", "Layer strength factor (0.05 to 1)", "number"],
+  ["process", "Process", "process"], ["note", "Note or source", "text"]];
+const PROC_FIELDS = [["minWallMM", "Minimum wall, mm"], ["minHoleMM", "Minimum hole, mm"], ["maxOverhangDeg", "Steepest overhang without support, °"],
+  ["zStrengthFactor", "Layer strength factor"], ["layerMM", "Layer height, mm"]];
+
+async function loadLibrary() {
+  LIB = await api("/api/library");
+  S.materials = LIB.materials; S.processes = LIB.processes;
+  $("#libPath").textContent = LIB.path;
+  const ms = LIB.materials, ps = LIB.processes;
+  $("#libMats").innerHTML = `<thead><tr><th>Name</th><th class="num">E, MPa</th><th class="num">Poisson</th><th class="num">Density, g/cm³</th>
+    <th class="num">Yield, MPa</th><th class="num">Min wall, mm</th><th class="num">Layer factor</th><th>Process</th><th>Source</th><th></th><th></th></tr></thead><tbody>
+    ${Object.entries(ms).map(([k, m]) => `<tr><td><b>${esc(k)}</b></td><td class="num">${fmt(m.E)}</td><td class="num">${fmt(m.nu)}</td>
+      <td class="num">${fmt(m.density)}</td><td class="num">${fmt(m.yield)}</td><td class="num">${fmt(m.minWallMM ?? 1)}</td>
+      <td class="num">${m.zStrengthFactor ? fmt(m.zStrengthFactor) : "–"}</td><td>${esc(m.process || "–")}</td>
+      <td class="note" title="${esc(m.note || "")}">${esc(m.source || m.note || "")}</td>
+      <td><span class="tag ${m.builtIn ? "" : "mine"}">${m.builtIn ? "Built in" : "Mine"}</span></td>
+      <td class="acts">${m.builtIn ? `<button class="btn" data-lib-copy="${esc(k)}" data-lib-kind="material">Copy to edit</button>`
+        : `<button class="btn" data-lib-edit="${esc(k)}" data-lib-kind="material">Edit</button><button class="btn" data-lib-del="${esc(k)}" data-lib-kind="material">Remove</button>`}</td></tr>`).join("")}</tbody>`;
+  $("#libProcs").innerHTML = `<thead><tr><th>Name</th><th class="num">Min wall, mm</th><th class="num">Min hole, mm</th><th class="num">Overhang, °</th>
+    <th>Supports</th><th>Closed cavities</th><th class="num">Layer factor</th><th>Build volume, mm</th><th>Up</th><th>Note</th><th></th><th></th></tr></thead><tbody>
+    ${Object.entries(ps).map(([k, p]) => `<tr><td><b>${esc(k)}</b></td><td class="num">${fmt(p.minWallMM)}</td><td class="num">${fmt(p.minHoleMM)}</td>
+      <td class="num">${fmt(p.maxOverhangDeg)}</td><td>${p.supportsAllowed === false ? "No" : "Yes"}</td><td>${esc(p.enclosedVoids)}</td>
+      <td class="num">${fmt(p.zStrengthFactor)}</td><td>${(p.buildVolumeMM || []).map(v => fmt(v)).join(" × ")}</td><td>${axisName(p.buildDirection || [0, 0, 1])}</td>
+      <td class="note" title="${esc(p.note || "")}">${esc(p.note || "")}</td><td><span class="tag ${p.builtIn ? "" : "mine"}">${p.builtIn ? "Built in" : "Mine"}</span></td>
+      <td class="acts">${p.builtIn ? `<button class="btn" data-lib-copy="${esc(k)}" data-lib-kind="process">Copy to edit</button>`
+        : `<button class="btn" data-lib-edit="${esc(k)}" data-lib-kind="process">Edit</button><button class="btn" data-lib-del="${esc(k)}" data-lib-kind="process">Remove</button>`}</td></tr>`).join("")}</tbody>`;
+  const vals = v => v ? Object.entries(v).filter(([k]) => !["note", "source"].includes(k)).map(([k, x]) => `${k} ${Array.isArray(x) ? x.join("×") : x}`).join(", ") : "";
+  $("#libLog").innerHTML = `<thead><tr><th>When</th><th>Change</th><th>What</th><th>Name</th><th>From</th><th>Values</th></tr></thead><tbody>
+    ${LIB.log.length ? LIB.log.map(e => `<tr><td>${new Date(e.time).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</td>
+      <td>${esc(e.action)}</td><td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td>${esc(e.source || "")}</td>
+      <td class="note" title="${esc(vals(e.before))}">${e.action === "removed" ? `<span class="quiet">was</span> ${esc(vals(e.before))}` : esc(vals(e.after))}</td></tr>`).join("")
+      : `<tr><td colspan="6" class="quiet">No changes yet. Materials you add or import are listed here with their source.</td></tr>`}</tbody>`;
+}
+
+function libEditor(kind, name, copy) {
+  const isMat = kind === "material";
+  const src = name ? (isMat ? LIB.materials[name] : LIB.processes[name]) : (isMat ? { nu: 0.35, process: "FDM" } : { ...LIB.processes.FDM });
+  const nm = name ? (copy ? `${name} (mine)` : name) : "";
+  const procOpts = v => `<select data-f="process"><option value="">None</option>${Object.keys(LIB.processes).map(k => `<option ${v === k ? "selected" : ""}>${esc(k)}</option>`).join("")}</select>`;
+  const fields = isMat ? MAT_FIELDS.map(([k, t, ty]) => `<label class="row"><span>${t}</span>${ty === "process" ? procOpts(src.process)
+      : `<input type="${ty === "number" ? "number" : "text"}" step="any" data-f="${k}" value="${esc(src[k] ?? "")}">`}</label>`).join("")
+    : PROC_FIELDS.map(([k, t]) => `<label class="row"><span>${t}</span><input type="number" step="any" data-f="${k}" value="${src[k] ?? ""}"></label>`).join("") + `
+      <label class="row"><span>Supports allowed</span><select data-f="supportsAllowed"><option value="true" ${src.supportsAllowed !== false ? "selected" : ""}>Yes</option><option value="false" ${src.supportsAllowed === false ? "selected" : ""}>No</option></select></label>
+      <label class="row"><span>Closed cavities</span><select data-f="enclosedVoids">${["allow", "warn", "fail"].map(v => `<option ${src.enclosedVoids === v ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+      <label class="row"><span>Build direction (up)</span><select data-f="buildDirection">${Object.keys(AXES).map(k => `<option ${axisName(src.buildDirection || [0, 0, 1]) === k ? "selected" : ""}>${k}</option>`).join("")}</select></label>
+      <div class="row wide"><span class="quiet">Build volume x, y, z (mm)</span><div class="xyz">${[0, 1, 2].map(i => `<input type="number" data-fv="${i}" value="${(src.buildVolumeMM || [256, 256, 256])[i]}">`).join("")}</div></div>
+      <label class="row wide"><span>Note</span><input type="text" data-f="note" value="${esc(src.note || "")}"></label>`;
+  $("#libEdit").innerHTML = `<div class="editor" data-kind="${kind}" data-orig="${esc(name && !copy ? name : "")}">
+    <h2>${name && !copy ? "Edit" : "New"} ${isMat ? "material" : "process"}</h2>
+    <label class="row"><span>Name</span><input type="text" data-f="name" value="${esc(nm)}" required></label>
+    <div class="grid2">${fields}</div>
+    ${isMat ? `<p class="help">E, Poisson's ratio, density and yield are needed. Layer strength factor is optional; without it the process value is used.</p>` : ""}
+    <div class="btns"><button class="primary" data-lib-save="${kind}">Save</button><button class="btn" data-lib-cancel>Cancel</button></div></div>`;
+  $("#libEdit").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function libSave(kind) {
+  const box = $("#libEdit .editor");
+  const get = k => box.querySelector(`[data-f="${k}"]`)?.value ?? "";
+  const name = get("name").trim();
+  const values = {};
+  box.querySelectorAll("[data-f]").forEach(el => { if (el.dataset.f !== "name" && el.value !== "") values[el.dataset.f] = el.value; });
+  try {
+    if (kind === "material") {
+      await post("/api/library/materials", { name, values, rename_from: box.dataset.orig || null });
+    } else {
+      values.buildDirection = AXES[values.buildDirection];
+      values.buildVolumeMM = [...box.querySelectorAll("[data-fv]")].map(el => +el.value);
+      values.supportsAllowed = values.supportsAllowed !== "false";
+      await post("/api/library/processes", { name, values });
+    }
+    $("#libEdit").innerHTML = "";
+    toast(`Saved ${name}`);
+    loadLibrary();
+  } catch (e) { toast(e.message, 8000); }
+}
+
+async function libDelete(kind, name) {
+  try {
+    await post(`/api/library/${kind === "material" ? "materials" : "processes"}/remove`, { name });
+    toast(`Removed ${name}. The change history keeps its values.`); loadLibrary();
+  } catch (e) { toast(e.message, 6000); }
+}
+
+async function importFile(file) {
+  if (!file) return;
+  try {
+    IMPORT = await api("/api/library/import", { method: "POST", headers: { "X-Filename": encodeURIComponent(file.name) }, body: file });
+  } catch (e) { return toast(e.message, 8000); }
+  const n = Object.keys(IMPORT.materials).length;
+  const errs = IMPORT.problems.filter(p => !p.startsWith("Note:")), notes = IMPORT.problems.filter(p => p.startsWith("Note:"));
+  $("#libImportBox").innerHTML = `<div class="editor" style="max-width:none"><h2>Import from ${esc(IMPORT.source)}</h2>
+    <p>${n} material${n === 1 ? "" : "s"} read${errs.length ? `, ${errs.length} row${errs.length === 1 ? "" : "s"} skipped` : ""}. Check the values, then save.</p>
+    ${n ? `<div class="scroll"><table class="hist"><thead><tr><th>Name</th><th class="num">E, MPa</th><th class="num">Poisson</th><th class="num">Density</th>
+      <th class="num">Yield, MPa</th><th class="num">Layer factor</th><th>Process</th><th></th></tr></thead><tbody>
+      ${Object.entries(IMPORT.materials).map(([k, m]) => `<tr><td><b>${esc(k)}</b></td><td class="num">${fmt(m.E)}</td><td class="num">${fmt(m.nu)}</td>
+        <td class="num">${fmt(m.density)}</td><td class="num">${fmt(m.yield)}</td><td class="num">${m.zStrengthFactor ? fmt(m.zStrengthFactor) : "–"}</td>
+        <td>${esc(m.process || "–")}</td><td>${IMPORT.exists.includes(k) ? `<span class="tag">replaces yours</span>` : ""}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    <ul class="problems">${errs.map(p => `<li class="err">${esc(p)}</li>`).join("")}${notes.map(p => `<li class="note">${esc(p.slice(6))}</li>`).join("")}</ul>
+    ${n ? `${IMPORT.exists.length ? `<label class="check"><input type="checkbox" id="impOverwrite" checked><span>Replace materials with the same name</span></label>` : ""}
+      <div class="btns"><button class="primary" data-imp-save>Save ${n} to my library</button><button class="btn" data-imp-cancel>Cancel</button></div>`
+      : `<div class="btns"><button class="btn" data-imp-cancel>Close</button></div>`}</div>`;
+}
+
+async function importSave() {
+  if (!IMPORT) return;
+  const ow = $("#impOverwrite") ? $("#impOverwrite").checked : true;
+  try {
+    const r = await post("/api/library/import/save", { materials: IMPORT.materials, overwrite: ow, source: IMPORT.source });
+    toast(`${r.added.length} added, ${r.replaced.length} replaced, ${r.skipped.length} kept`);
+    IMPORT = null; $("#libImportBox").innerHTML = ""; loadLibrary();
+  } catch (e) { toast(e.message, 8000); }
+}
+
+async function saveCustomMaterial() {
+  const name = ($("#saveMatName").value || "").trim();
+  if (!name) return toast("Type a name for the material first.");
+  const values = { ...S.spec.material }; delete values.name;
+  try {
+    await post("/api/library/materials", { name, values, source: `project ${S.project.id}` });
+    await refreshLib();
+    S.spec.material = name; save(); render();
+    toast(`Saved ${name} to your library. This project now uses it by name.`);
+  } catch (e) { toast(e.message, 8000); }
 }
 
 // ------------------------------------------------------------------ history

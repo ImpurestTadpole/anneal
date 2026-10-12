@@ -241,12 +241,23 @@ class FEM:
         ue = u_full[self.edof]
         return np.einsum("ij,ij->i", ue @ self.ke, ue)
 
-    def von_mises(self, u_full, E_material):
-        """Element-centre von Mises stress in the material (MPa)."""
+    def stress(self, u_full, E_material):
+        """Element-centre stress (MPa), Voigt order xx yy zz xy yz zx, shape (n, 6)."""
         ue = u_full[self.edof]
         eps = ue @ self.B0.T
-        sig = (eps @ self.D.T) * np.asarray(E_material)[:, None] if np.ndim(E_material) else \
-            (eps @ self.D.T) * E_material
+        return (eps @ self.D.T) * (np.asarray(E_material)[:, None] if np.ndim(E_material) else E_material)
+
+    @staticmethod
+    def normal_stress(sig, d):
+        """Normal stress on planes across direction d (for example the build direction)."""
+        d = np.asarray(d, float) / np.linalg.norm(d)
+        x, y, z = d
+        return (sig[:, 0] * x * x + sig[:, 1] * y * y + sig[:, 2] * z * z
+                + 2 * (sig[:, 3] * x * y + sig[:, 4] * y * z + sig[:, 5] * z * x))
+
+    def von_mises(self, u_full, E_material):
+        """Element-centre von Mises stress in the material (MPa)."""
+        sig = self.stress(u_full, E_material)
         sx, sy, sz, txy, tyz, tzx = sig.T
         return np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2)
                        + 3 * (txy ** 2 + tyz ** 2 + tzx ** 2))

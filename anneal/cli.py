@@ -115,6 +115,66 @@ def cmd_init(model, out=None, material="AlSi10Mg-LPBF"):
     return out
 
 
+def cmd_materials(a):
+    from . import materials as M
+    if a.action == "list":
+        print(f"Library file for your own materials: {M.library_path()}")
+        for k, v in M.all_materials().items():
+            tag = "built-in" if v["builtIn"] else "yours"
+            print(f"  {k:22.22s} E {v['E']:>8.0f} MPa  yield {v['yield']:>6.1f} MPa  {v['density']:.2f} g/cm3  "
+                  f"wall {v.get('minWallMM', 1.0)} mm  {v.get('process', '-'):5s} {tag}")
+        return 0
+    if a.action == "log":
+        for e in M.library_log(50):
+            print(f"  {e['time']}  {e['action']:8s} {e['kind']:8s} {e['name']}" + (f"  from {e['source']}" if e['source'] else ""))
+        return 0
+    if a.action == "processes":
+        for k, v in M.all_processes().items():
+            print(f"  {k:10s} wall {v['minWallMM']} mm, hole {v['minHoleMM']} mm, overhang {v['maxOverhangDeg']:g}°, "
+                  f"voids {v['enclosedVoids']}, Z strength x{v['zStrengthFactor']}, build {v['buildVolumeMM']} mm"
+                  f"{'' if v['builtIn'] else '  (yours)'}")
+        return 0
+    if a.action == "import":
+        if not a.target:
+            raise ValueError("Give the file: anneal materials import my-materials.csv")
+        with open(a.target, "rb") as fh:
+            new, problems = M.parse_import(a.target, fh.read())
+        for name, m in new.items():
+            print(f"  {name}: E {m['E']:g} MPa, nu {m['nu']:g}, {m['density']:g} g/cm3, yield {m['yield']:g} MPa"
+                  + (f", Z x{m['zStrengthFactor']}" if "zStrengthFactor" in m else "") + (f", {m['process']}" if m.get("process") else ""))
+        for p in problems:
+            print("  " + p)
+        if not new:
+            print("Nothing to import.")
+            return 1
+        if a.dry_run:
+            print(f"Dry run: {len(new)} material(s) read, nothing saved.")
+            return 0
+        added, replaced, skipped = M.add_materials(new, overwrite=not a.keep_existing, source=os.path.basename(a.target))
+        print(f"Saved to {M.library_path()}: {len(added)} added, {len(replaced)} replaced, {len(skipped)} kept as they were.")
+        return 0
+    if a.action == "add":
+        if not a.target:
+            raise ValueError("Give a name: anneal materials add \"PETG-CF\" --E 3800 --nu 0.35 --density 1.25 --yield 52")
+        m = {k: getattr(a, k2) for k, k2 in (("E", "E"), ("nu", "nu"), ("density", "density"), ("yield", "yield"),
+                                             ("minWallMM", "min_wall"), ("zStrengthFactor", "z_factor"),
+                                             ("process", "process"), ("note", "note")) if getattr(a, k2) is not None}
+        m = M.validate_material(m, f"'{a.target}'")
+        M.add_materials({a.target: m}, source="typed with anneal materials add")
+        print(f"Saved '{a.target}' to {M.library_path()}")
+        return 0
+    if a.action == "remove":
+        M.remove_material(a.target)
+        print(f"Removed '{a.target}'.")
+        return 0
+    if a.action == "export":
+        out = a.target or "anneal-materials.json"
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(M.export_library(), fh, indent=2)
+        print(f"Wrote {out}. Import it on another PC with: anneal materials import {out}")
+        return 0
+
+
 def cmd_run(spec, out=None, open_report=False):
     from .run import run
     record, html = run(spec, out)
@@ -149,7 +209,15 @@ def main(argv=None):
     a = sub.add_parser("history", help="list past runs from the history database")
     a.add_argument("--project")
     a.add_argument("--limit", type=int, default=30)
-    sub.add_parser("materials", help="list the material library")
+    a = sub.add_parser("materials", help="list, import, add, remove or export materials")
+    a.add_argument("action", nargs="?", default="list", choices=["list", "import", "add", "remove", "export", "processes", "log"])
+    a.add_argument("target", nargs="?", help="file (import/export) or material name (add/remove)")
+    a.add_argument("--dry-run", action="store_true", help="import: show what would be added, save nothing")
+    a.add_argument("--keep-existing", action="store_true", help="import: do not replace materials with the same name")
+    for k, h in (("E", "Young's modulus, MPa"), ("nu", "Poisson's ratio"), ("density", "g/cm3"), ("yield", "yield strength, MPa"),
+                 ("min-wall", "minimum wall, mm"), ("z-factor", "layer strength / in-plane strength"), ("process", "FDM, SLS, LPBF or yours"),
+                 ("note", "free text")):
+        a.add_argument(f"--{k}", dest=k.replace("-", "_"), help=h)
     a = sub.add_parser("drop", help="drag-and-drop entry point")
     a.add_argument("path")
     args = p.parse_args(argv)
@@ -194,10 +262,7 @@ def main(argv=None):
             print("Solver validation gate")
             return 0 if run_all() else 1
         elif args.cmd == "materials":
-            from .materials import MATERIALS
-            for k, v in MATERIALS.items():
-                print(f"  {k:15s} E {v['E']:>8.0f} MPa  yield {v['yield']:>5.0f} MPa  "
-                      f"{v['density']:.2f} g/cm3  min wall {v['minWallMM']} mm  ({v['note']})")
+            return cmd_materials(args)
         elif args.cmd == "drop":
             path = args.path
             if path.lower().endswith(".json"):
@@ -211,7 +276,7 @@ def main(argv=None):
                 return 0
             print(f"Drop a model ({', '.join(MODEL_EXT)}) or a spec (.json), not {path}")
             return 1
-    except (SpecError, ModelError, SolverError, ValueError, FileNotFoundError, RuntimeError) as e:
+    except (SpecError, ModelError, SolverError, ValueError, FileNotFoundError, RuntimeError, OSError) as e:
         print(f"\nERROR: {e}", file=sys.stderr)
         return 1
     return 0

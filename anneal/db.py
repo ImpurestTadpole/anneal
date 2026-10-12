@@ -43,7 +43,8 @@ _lock = threading.Lock()
 
 
 def default_path():
-    return os.path.join(os.path.expanduser("~"), "Anneal Projects", "anneal.db")
+    from .paths import home
+    return os.path.join(home(), "anneal.db")
 
 
 def connect(path=None):

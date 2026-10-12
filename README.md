@@ -73,7 +73,9 @@ small local server at `http://127.0.0.1:8765` and works offline.
    *Add load*, click where the force acts, and type the force in newtons and its direction.
    *Add keep-out* keeps a space empty (clearance for a bolt head or a mating part);
    *Add keep-solid* keeps a wall solid. Add load cases if the part sees more than one load.
-3. **Material and goal.** Pick the material (or type your own values), then either
+3. **Material, process and goal.** Pick the material (built in, from your library, or typed for this
+   project only, with *Save to my library*). Pick the process (FDM, SLS, LPBF or one of yours) and the
+   build direction; *Show printability* colours the faces that need support. Then choose
    *Lightest part that meets the limits* or *Keep a fixed share of the material*.
 4. **Optimizer, load paths and output.** Every setting of the spec file is here, with a short
    explanation: iterations, mass-search passes, smallest member, penalty, move limit, edge
@@ -94,7 +96,7 @@ reuse its settings in the current project, or tick two runs to compare them: the
 results side by side and only the settings that differ. If the database is lost, Anneal rebuilds
 it from the run folders.
 
-**Quit** (top right) stops Anneal. Opening the icon again while Anneal runs shows the running one.
+**Library** holds materials and processes for all projects (see section 4). **Quit** (top right) stops Anneal. Opening the icon again while Anneal runs shows the running one.
 
 ### On Windows, by drag and drop
 
@@ -242,7 +244,73 @@ A failed check prints the fix, for example "Raise objective.volumeFraction".
 
 ---
 
-## 4. Output (`runs/<name>/`)
+## 4. Materials, processes and printability
+
+### Materials
+
+Built in (typical datasheet values; replace them with your own coupon data when you have it):
+PLA-FDM, PETG-FDM, PA12-SLS, AlSi10Mg-LPBF, Ti64-LPBF, 316L-LPBF. `anneal materials` lists them with
+their values.
+
+Your own materials and processes are saved in `Anneal Projects/library.json`. Updates of Anneal never
+change that file. Four ways to add materials:
+
+| Way | How |
+|---|---|
+| Import a file | Library page → *Import materials from CSV or JSON*, check the preview, save. Or `anneal materials import file.csv` (`--dry-run` to only check, `--keep-existing` to not replace). |
+| Type one | Library page → *Add material*, or *Copy to edit* on a built-in one. Or `anneal materials add "PETG-CF" --E 3800 --nu 0.35 --density 1.25 --yield 52 --z-factor 0.58 --process FDM`. |
+| From a project | Step 3 → *Custom (this project only)* → *Save to my library*. |
+| From another PC | *Export my library* there (or `anneal materials export`), then import the JSON here. |
+
+Import files: one row per material, a header row with the column names. Anneal recognises usual
+datasheet names (`Tensile Modulus`, `Young's modulus`, `E`, `Poisson's ratio`, `Density`,
+`Yield strength`, `Tensile strength`, `Z strength`, `Process`, `Min wall`, `Note`) and converts units
+written in the header (`E (GPa)`) or in the cell (`3.8 GPa`): GPa, MPa, psi, ksi, g/cm³, kg/m³, lb/in³,
+mm, in. Commas, semicolons, tabs and decimal commas work. A Z (layer) strength column becomes the
+layer-strength factor. Every skipped row is reported with its row number and the fix. Process names
+FFF→FDM, MJF→SLS, SLM/DMLS→LPBF are mapped.
+
+```
+name,E (GPa),Poisson,density (g/cm3),yield (MPa),Z strength (MPa),process,min wall (mm),note
+PETG-CF Bambu,3.8,0.35,1.25,52,30,FDM,0.8,Bambu Lab TDS 2024
+Inconel 718,200,0.29,8.19,1034,,LPBF,0.4,
+```
+
+Every change to your library (added, replaced, edited, removed, with the source file and the values
+before and after) is kept in the library's change history: Library page, or `anneal materials log`.
+Runs keep a full copy of the material values they used, so old runs stay correct if you change the
+library later. History can be filtered by material.
+
+### Processes and printability (DFM)
+
+Design for manufacturing (DFM) means the part can actually be made by the chosen process, not only
+that it is strong enough. A process profile holds the rules; Anneal checks the exported part against
+them after every run:
+
+| Check | Rule | FDM | SLS | LPBF |
+|---|---|---|---|---|
+| Build volume | Part fits the machine, height along the build direction | 256 mm cube | 300 mm cube | 250 × 250 × 325 |
+| Minimum wall | Thinnest member ≥ the larger of material and process minimum wall | 0.8 mm | 0.8 mm | 0.4 mm |
+| Minimum hole | Smaller holes print out of round: print undersize, then drill | 2.0 mm | 1.5 mm | 1.0 mm |
+| Overhang | Downward faces steeper than this from vertical need support; support volume estimated; best of the six axis directions suggested | 45° | none needed | 45° |
+| Closed cavities | Powder is trapped in closed cavities | allowed | not allowed | not allowed |
+| Layer strength | Tension across the layers vs yield × layer-strength factor | × 0.5 | × 0.9 | × 0.9 |
+
+The order is: process profile → the material's own layer-strength factor → values typed in the
+project. Copy a built-in process in the Library to make your own printer (for example "Bambu X1C" with
+your build volume and the overhang angle you trust). The *Printability* view colours faces that need
+support (amber) and faces on the build plate (dark) for any build direction; *Under* looks up from
+the plate. The checks report what the printer will see; they do not yet steer the optimization
+itself (an overhang constraint inside the optimizer is a later step).
+
+In the spec file:
+
+```jsonc
+"material": "PETG-CF Bambu",
+"process": { "name": "FDM", "buildDirection": [1, 0, 0], "maxOverhangDeg": 50 },  // or "FDM", or "none"
+```
+
+## 5. Output (`runs/<name>/`)
 
 | File | Content |
 |---|---|
@@ -254,7 +322,7 @@ A failed check prints the fix, for example "Raise objective.volumeFraction".
 
 ---
 
-## 5. How it works
+## 6. How it works
 
 ```
 model ──► voxelize (fill fractions) ──► anchors, keep-outs, frozen regions
@@ -272,10 +340,11 @@ model ──► voxelize (fill fractions) ──► anchors, keep-outs, frozen r
 | `optimize.py` | SIMP, density filter, penalty continuation, Heaviside projection, OC, multi-load | Optimizer |
 | `problem.py` | Spec → grid, anchors, guard rails with fixes | Engineering model |
 | `export.py`, `run.py`, `report.py` | Load-path guard, surface, as-built re-solve, checks, mass search, record | Run harness |
-| `materials.py` | Material and process data | Library |
 | `pick.py` | Click on the model → hole (fitted cylinder), flat face (oriented slab) or patch | GUI |
 | `fields.py` | Displacement and stress at the corners of the displayed mesh | GUI |
 | `db.py` | Run history in SQLite, rebuilt from run folders if needed | Record |
+| `materials.py` | Built-in and your materials and processes, import (CSV/JSON, units), change history | Library |
+| `dfm.py` | Build volume, wall, hole, overhang and support, best direction, cavities, layer strength | Printability |
 | `gui/server.py`, `gui/desktop.py`, `gui/static/` | Local server, desktop window, page (three.js r160, MIT, included) | GUI |
 | `validate.py` | 6-check solver gate | Validation |
 
@@ -309,11 +378,11 @@ Design rules carried over from the Phase 0 spike:
 | V5 deterministic reruns | identical SHA-256 |
 | V6 SIMP vs uniform at equal mass | about 92 % lower compliance |
 
-Fast tests: `pip install pytest` then `python -m pytest -q` (15 tests, about 40 s).
+Fast tests: `pip install pytest` then `python -m pytest -q` (25 tests, a few minutes).
 
 ---
 
-## 6. Limits — read before you print
+## 7. Limits — read before you print
 
 - Linear elastic, isotropic, small displacement, static loads. No buckling, fatigue, contact,
   thermal or dynamic analysis.
@@ -322,19 +391,22 @@ Fast tests: `pip install pytest` then `python -m pytest -q` (15 tests, about 40 
 - FDM parts are anisotropic. Z strength can be under half the listed yield.
 - Material values are typical datasheet figures. Replace them with your own coupon data in `materials.py`.
 - Bolted holes are modelled as fully fixed walls. This is stiffer than a real joint.
-- No overhang or support optimization yet. Check printability in your slicer.
+- Printability checks report; they do not yet steer the optimizer (no overhang constraint inside
+  SIMP). The support volume is the space under overhangs; slicers fill it sparsely.
+- Flexible materials (TPU and similar, E under about 200 MPa) are outside the linear model.
 - Voxel count sets run time. On a 2-core machine: `draft` about 2 minutes per pass, `normal` about
   10 minutes for the first pass and 4 for each later pass, `fine` about 30. The example bracket with
   the mass search takes about 20–25 minutes at `normal`. Use `draft` to set up a spec, then `normal`.
 - Use 60 or more iterations for a part you will make. Under 25, the design stays grey and the
   exported part comes out heavier than the target (Anneal warns you).
 
-## 7. Next steps on the plan
+## 8. Next steps on the plan
 
 - PicoGK backend for `kernel.py` and `geometry.py` on Windows and macOS (lattice infill, exact offsets).
 - Lattice grading from grey density, instead of thresholding it.
 - Chrono sidecar for loads from simulated events (drop, landing), as in the method document.
-- Overhang constraints, and a minimum-size constraint that holds after thresholding.
+- Overhang constraint inside the optimizer (self-supporting designs), and a minimum-size constraint
+  that holds after thresholding.
 
 Third-party licences: numpy, scipy, scikit-image, matplotlib (BSD-3), pyamg, trimesh, three.js (MIT),
 optional pywebview (BSD-3), optional cadquery-ocp / OpenCASCADE (LGPL-2.1 with the OCCT exception).

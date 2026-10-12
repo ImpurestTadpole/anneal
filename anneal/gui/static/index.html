@@ -19,6 +19,7 @@
   <nav>
     <button data-go="home" id="navHome">Projects</button>
     <button data-go="history" id="navHistory">History</button>
+    <button data-go="library" id="navLibrary">Library</button>
     <button id="quit" title="Stop Anneal on this PC">Quit</button>
   </nav>
 </header>
@@ -32,6 +33,7 @@
         <button data-view="shape" class="on">Shape</button>
         <button data-view="disp">Displacement</button>
         <button data-view="stress">Stress</button>
+        <button data-view="print" title="Faces that need support for the build direction">Printability</button>
       </div>
       <label class="tool" id="deformTool">Deformed
         <input type="range" id="deform" min="0" max="2" step="0.05" value="0">
@@ -45,6 +47,7 @@
         <button data-cam="front">Front</button>
         <button data-cam="top">Top</button>
         <button data-cam="right">Right</button>
+        <button data-cam="under" title="Look up from under the build plate">Under</button>
       </div>
     </div>
     <div class="hint" id="hint" hidden></div>
@@ -95,6 +98,43 @@
   </div>
   <div class="scroll"><table class="hist" id="histTable"></table></div>
   <div id="compare"></div>
+</section>
+
+<section id="library" class="page" hidden>
+  <div class="libWrap">
+    <h1>Library</h1>
+    <p class="quiet">Materials and processes for all projects. Yours are saved in <span id="libPath"></span>.
+      Updates of Anneal never change that file.</p>
+    <div class="btns">
+      <button class="primary" data-lib-new="material">Add material</button>
+      <label class="btn file">Import materials from CSV or JSON…<input type="file" id="libImport" accept=".csv,.json,.txt,.tsv"></label>
+      <button class="btn" data-lib-new="process">Add process</button>
+      <a class="btn" href="/api/library/export">Export my library</a>
+    </div>
+    <div id="libImportBox"></div>
+    <div id="libEdit"></div>
+    <h2>Materials</h2>
+    <div class="scroll"><table class="hist" id="libMats"></table></div>
+    <h2>Processes</h2>
+    <p class="quiet">A process holds the printability rules: minimum wall and hole, steepest overhang without support,
+      build volume and direction, closed cavities, and strength across the layers.</p>
+    <div class="scroll"><table class="hist" id="libProcs"></table></div>
+    <h2>Changes to your library</h2>
+    <div class="scroll"><table class="hist" id="libLog"></table></div>
+    <details class="fmt"><summary>How to write an import file</summary>
+      <p>One row per material. A header row names the columns. Anneal recognises common datasheet names and units,
+        and converts them: GPa, MPa, psi, ksi; g/cm³, kg/m³, lb/in³; mm, in. Write the unit in the header, as
+        <code>E (GPa)</code>, or in the cell, as <code>3.8 GPa</code>. Commas, semicolons and tabs all work, and
+        so do decimal commas.</p>
+      <pre>name,E (GPa),Poisson,density (g/cm3),yield (MPa),Z strength (MPa),process,min wall (mm),note
+PETG-CF Bambu,3.8,0.35,1.25,52,30,FDM,0.8,Bambu Lab TDS 2024
+Inconel 718,200,0.29,8.19,1034,,LPBF,0.4,</pre>
+      <p>Needed: name, E, Poisson's ratio, density, yield (or tensile strength). Optional: Z (layer) strength, which
+        becomes the layer-strength factor; process (FDM, FFF, SLS, MJF, LPBF, SLM, DMLS or one of yours); minimum
+        wall; note. JSON works too: <code>{"materials": {"Name": {"E": "3.8 GPa", "nu": 0.35, …}}}</code>, which
+        is also what <i>Export my library</i> writes.</p>
+    </details>
+  </div>
 </section>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>

@@ -29,7 +29,7 @@ import trimesh
 
 from .. import __version__
 from .. import db
-from ..materials import MATERIALS
+from .. import materials as M
 from ..kernel import FASTENERS
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -373,8 +373,10 @@ def make_handler(app):
                 a = parts[1:]
                 if method == "GET" and a == ["state"]:
                     return self._send(200, {"version": __version__, "workspace": app.ws,
-                                            "materials": MATERIALS, "fasteners": list(FASTENERS),
-                                            "projects": app.projects()})
+                                            "materials": M.all_materials(), "processes": M.all_processes(),
+                                            "fasteners": list(FASTENERS), "projects": app.projects()})
+                if a[0] == "library":
+                    return self._library(method, a[1:], q)
                 if method == "POST" and a == ["projects"]:
                     name = unquote(self.headers.get("X-Filename", "model.stl"))
                     return self._send(200, app.new_project(name, self._body()))
@@ -436,11 +438,62 @@ def make_handler(app):
                 return self._send(404, {"error": f"No route for {method} {u.path}"})
             except FileNotFoundError as e:
                 return self._send(404, {"error": str(e)})
-            except (ValueError, RuntimeError, KeyError) as e:
+            except (ValueError, RuntimeError, KeyError, M.LibraryError) as e:
                 return self._send(400, {"error": str(e)})
             except Exception as e:
                 traceback.print_exc()
                 return self._send(500, {"error": f"{e.__class__.__name__}: {e}"})
+
+        def _library(self, method, a, q):
+            if method == "GET" and not a:
+                return self._send(200, {"materials": M.all_materials(), "processes": M.all_processes(),
+                                        "path": M.library_path(), "log": M.library_log()})
+            if method == "GET" and a == ["export"]:
+                return self._send(200, json.dumps(M.export_library(), indent=2), "application/json",
+                                  {"Content-Disposition": 'attachment; filename="anneal-library.json"'})
+            if method == "POST" and a == ["import"]:
+                name = unquote(self.headers.get("X-Filename", "materials.csv"))
+                mats, problems = M.parse_import(name, self._body())
+                existing = M.all_materials()
+                return self._send(200, {"materials": mats, "problems": problems, "source": name,
+                                        "exists": [n for n in mats if n in existing]})
+            if method == "POST" and a == ["import", "save"]:
+                b = self._json()
+                mats = {n: M.validate_material(dict(v), f"'{n}'") for n, v in b["materials"].items()}
+                added, replaced, skipped = M.add_materials(mats, overwrite=b.get("overwrite", True), source=b.get("source", ""))
+                return self._send(200, {"added": added, "replaced": replaced, "skipped": skipped})
+            if method == "POST" and a == ["materials"]:
+                b = self._json()
+                name = str(b.get("name", "")).strip()
+                if not name:
+                    raise ValueError("Give the material a name.")
+                if name in M.MATERIALS:
+                    raise ValueError(f"'{name}' is a built-in material. Choose another name for your version.")
+                vals = M.validate_material({k: v for k, v in b.get("values", {}).items() if v not in (None, "")}, f"'{name}'")
+                old = b.get("rename_from")
+                mine = M.load_user()["materials"]
+                prev = mine.get(old or name, {})
+                src = prev.get("source")
+                vals["source"] = (src if src.endswith("edited in the app") else f"{src}; edited in the app") if src \
+                    else b.get("source", "typed in the app")
+                if old and old != name:
+                    M.remove_material(old)
+                M.add_materials({name: vals}, source=vals["source"])
+                return self._send(200, {"saved": name})
+            if method == "POST" and a == ["materials", "remove"]:
+                M.remove_material(self._json()["name"])
+                return self._send(200, {"removed": True})
+            if method == "POST" and a == ["processes"]:
+                b = self._json()
+                name = str(b.get("name", "")).strip()
+                if name in M.PROCESSES:
+                    raise ValueError(f"'{name}' is a built-in process. Choose another name for your version.")
+                M.save_process(name, b.get("values", {}))
+                return self._send(200, {"saved": name})
+            if method == "POST" and a == ["processes", "remove"]:
+                M.remove_process(self._json()["name"])
+                return self._send(200, {"removed": True})
+            return self._send(404, {"error": "No such library route."})
 
         def do_GET(self):
             self._route("GET")
@@ -452,7 +505,8 @@ def make_handler(app):
 
 
 def default_workspace():
-    return os.path.join(os.path.expanduser("~"), "Anneal Projects")
+    from ..paths import home
+    return home()
 
 
 def running_instance(port=8765):
@@ -469,6 +523,8 @@ def running_instance(port=8765):
 
 def start_server(workspace=None, port=8765):
     """Start the server in a background thread. Returns (server, url, app)."""
+    if workspace:   # the material library and the history database live in the same folder
+        os.environ["ANNEAL_HOME"] = os.path.abspath(workspace)
     app = App(workspace or default_workspace())
     srv = None
     for p in range(port, port + 20):
