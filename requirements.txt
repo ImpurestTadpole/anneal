@@ -1,0 +1,10 @@
+# Core (all permissive licences: BSD / MIT)
+numpy>=1.24
+scipy>=1.10
+pyamg>=5.0
+trimesh>=4.0
+scikit-image>=0.21
+matplotlib>=3.7
+# Optional: STEP import (OpenCASCADE wrapper, LGPL-2.1 with OCCT exception). Installed by the
+# install scripts when a wheel exists for your platform; without it, export STL from CAD.
+# cadquery-ocp>=7.7

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anneal"
+version = "0.1.0"
+description = "Topology optimization of existing parts on a voxel grid: drop in a model, get a lighter, stiffer part."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary - personal use" }
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "pyamg>=5.0",
+  "trimesh>=4.0",
+  "scikit-image>=0.21",
+  "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+step = ["cadquery-ocp>=7.7"]
+test = ["pytest>=7"]
+
+[project.scripts]
+anneal = "anneal.cli:main"
+
+[tool.setuptools]
+packages = ["anneal"]
