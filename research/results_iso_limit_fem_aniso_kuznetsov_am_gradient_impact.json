@@ -1,0 +1,63 @@
+{
+ "D isotropic limit equals elasticity_D": {
+  "ok": true,
+  "maxErr": 2.220446049250313e-16
+ },
+ "D isotropic invariant under rotation [1, 0, 0]": {
+  "ok": true
+ },
+ "D isotropic invariant under rotation [0, 1, 0]": {
+  "ok": true
+ },
+ "D isotropic invariant under rotation [0.3, -0.5, 0.8]": {
+  "ok": true
+ },
+ "D symmetric positive definite": {
+  "ok": true
+ },
+ "D for build +X: stiffness xx equals zz of build +Z": {
+  "ok": true,
+  "Dxx": 1.1625354777672656,
+  "Dzz": 1.1625354777672656
+ },
+ "FEM bar along build axis shows Ez": {
+  "ok": true,
+  "Ez_fem": 2399.999999988393,
+  "Ez": 2400.0
+ },
+ "FEM bar in layer plane shows Ep": {
+  "ok": true,
+  "Ex_fem": 3499.999999999655,
+  "Ep": 3500.0
+ },
+ "Kuznetsov fit reproduces Table 1 trend (R2 > 0.9)": {
+  "ok": true,
+  "R2_with_UFSmax_70p7": 0.9561093880093915,
+  "a_bestfit_with_58p19": 71.34077645551521,
+  "free_fit_a_b": [
+   70.69781610071382,
+   56.6985626864196
+  ],
+  "worst_abs_err_MPa": 6.9044863153376355,
+  "worst_at_r": 1.3333333333333333,
+  "pred_r1": 12.510000000000002
+ },
+ "AM filter adjoint matches finite differences (axis 2, sign 1)": {
+  "ok": true,
+  "maxRelErr": 2.681865265725843e-06
+ },
+ "AM filter adjoint matches finite differences (axis 0, sign -1)": {
+  "ok": true,
+  "maxRelErr": 1.3668132295723064e-05
+ },
+ "AM filter keeps supported, removes floating material": {
+  "ok": true,
+  "supportedMin": 1.0,
+  "floatingMax": 0.011810668677584176
+ },
+ "Equivalent static impact force equals mass-spring peak": {
+  "ok": true,
+  "F_closed": 3000.0,
+  "F_ode": 3000.00000091725
+ }
+}

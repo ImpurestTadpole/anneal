@@ -68,10 +68,12 @@ def _B(dNdx):
     return B
 
 
-def hex8_matrices(nu, h=1.0):
+def hex8_matrices(nu, h=1.0, D=None):
     """Element stiffness (E = 1) for a cube of side h by 2x2x2 Gauss quadrature,
-    plus the strain-displacement matrix at the centre and D."""
-    D = elasticity_D(nu)
+    plus the strain-displacement matrix at the centre and D.
+    D (optional): a 6x6 constitutive matrix normalised to the reference modulus
+    (for an anisotropic material). None = isotropic with Poisson ratio nu."""
+    D = elasticity_D(nu) if D is None else np.asarray(D, float)
     ke = np.zeros((24, 24))
     g = 1 / np.sqrt(3)
     jac = h / 2
@@ -130,14 +132,14 @@ class Grid:
 class FEM:
     """Linear elastic solve on the active voxels of a grid."""
 
-    def __init__(self, grid, active, fixed_dofs, nu, log=None):
+    def __init__(self, grid, active, fixed_dofs, nu, log=None, D=None):
         t0 = time.time()
         self.grid = grid
         self.log = log or (lambda *a: None)
         self.act = np.flatnonzero(active)
         if self.act.size == 0:
             raise SolverError("No active voxels: the design space is empty.")
-        ke, self.B0, self.D = hex8_matrices(nu, grid.h)
+        ke, self.B0, self.D = hex8_matrices(nu, grid.h, D)
         self.ke = ke
         en = grid.element_nodes(self.act)
         self.edof = (3 * en[:, :, None] + np.arange(3)).reshape(-1, 24)
@@ -168,7 +170,8 @@ class FEM:
         self.indptr = np.searchsorted(urow, np.arange(self.nfree + 1)).astype(np.int64)
         self.map = inv.astype(np.int32 if ukey.size < 2 ** 31 else np.int64)
         self.ei = (idx // 576).astype(np.int32)
-        self.kev = ke.ravel()[idx % 576]
+        self.loc = (idx % 576).astype(np.int16)
+        self.kev = ke.ravel()[self.loc]
         self.nnz = ukey.size
 
         # Rigid-body modes as the multigrid near-null space
@@ -198,6 +201,11 @@ class FEM:
     def assemble(self, Ee):
         """Ee: stiffness scale per active element (E in MPa times fill times density law)."""
         data = np.bincount(self.map, weights=self.kev * Ee[self.ei], minlength=self.nnz)
+        return sp.csr_matrix((data, self.indices, self.indptr), shape=(self.nfree, self.nfree))
+
+    def assemble_matrix(self, m24, w):
+        """Assemble any 24x24 element matrix m24 scaled by w per active element, on K's pattern."""
+        data = np.bincount(self.map, weights=m24.ravel()[self.loc] * w[self.ei], minlength=self.nnz)
         return sp.csr_matrix((data, self.indices, self.indptr), shape=(self.nfree, self.nfree))
 
     def reduce_load(self, F_global):

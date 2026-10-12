@@ -1,0 +1,37 @@
+{
+ "Cantilever benchmark unchanged by the hooks (AM off, D None)": {
+  "ok": true,
+  "stiffer": 91.59699612657158,
+  "baseline": 91.59699612657158,
+  "seconds": 240.09089303016663
+ },
+ "hex8 with explicit isotropic D is bit-identical": {
+  "ok": true
+ },
+ "Euler cantilever column, h=1.0 (4 voxels across)": {
+  "ok": true,
+  "BLF": 15.130191732102523,
+  "euler": 14.621636149762013,
+  "ratio": 1.0347810311466947,
+  "modes": [
+   15.130191732102523,
+   15.130191734282434,
+   132.50592876468738,
+   132.50592876562936
+  ],
+  "seconds": 4.111026287078857
+ },
+ "Euler cantilever column, h=0.5 (8 voxels across)": {
+  "ok": true,
+  "BLF": 14.74530193118769,
+  "euler": 14.621636149762013,
+  "ratio": 1.0084577252613203,
+  "modes": [
+   14.74530193118769,
+   14.7453019407741,
+   129.00832379886242,
+   129.00832380689968
+  ],
+  "seconds": 105.61417579650879
+ }
+}

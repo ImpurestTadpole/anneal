@@ -48,7 +48,7 @@ class Filter:
 
 
 def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
-         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX):
+         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX, am=None):
     t_start = time.time()
     fem = FEM(grid, active, fixed, nu, log=log)
     act = fem.act
@@ -86,10 +86,22 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         th = np.tanh(b * (xt - ETA))
         return (t0 + th) / (t0 + t1), b * (1 - th ** 2) / (t0 + t1)
 
+    def _am(v):                      # optional overhang (AM) filter on the projected design
+        full = np.zeros(grid.nelem)
+        full[act] = v
+        return grid.to1d(am.forward(grid.to3d(full)))[act]
+
+    def _am_T(d):
+        full = np.zeros(grid.nelem)
+        full[act] = d
+        return grid.to1d(am.backward(grid.to3d(full)))[act]
+
     def physical(xd, with_grad=False):
         xt = filt.forward(xd)
         xp, dxp = project(xt)
         xp[frz] = 1.0
+        if am is not None:
+            xp = _am(xp)
         return (xp, dxp) if with_grad else xp
 
     hist = []
@@ -138,8 +150,14 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
             coef = (r / obj) ** (PNORM - 1) * w / c0
             dc = sum(ci * d for ci, d in zip(coef, dce))
         dc = np.minimum(dc, 0.0)
-        dcx = filt.backward(dc * dxp)
-        dvx = filt.backward(phi * dxp)
+        if am is not None:   # chain rule through the AM filter (forward state from physical())
+            dvp = _am_T(phi.copy())
+            physical(x)                       # restore the AM cache to this design point
+            dcp = _am_T(dc)
+        else:
+            dcp, dvp = dc, phi
+        dcx = filt.backward(dcp * dxp)
+        dvx = filt.backward(dvp * dxp)
 
         # OC: geometric bisection on the multiplier, bracketed around the sensitivity scale
         scale = max(float(np.mean(-dcx[des]) / max(np.mean(dvx[des]), 1e-30)), 1e-300) if des.any() else 1.0

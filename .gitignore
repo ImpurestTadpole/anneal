@@ -6,3 +6,5 @@ runs/
 .pytest_cache/
 build/
 dist/
+research/*.npy
+research/*.log

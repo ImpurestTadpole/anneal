@@ -1,0 +1,16 @@
+{
+ "AM filter in SIMP cuts unsupported voxels": {
+  "ok": true,
+  "compliance01_plain": 0.014278760207718112,
+  "vol01_plain": 0.25390625,
+  "unsupported_plain": 0.1049618320610687,
+  "seconds_plain": 9.874610185623169,
+  "iters_plain": 1,
+  "compliance01_am": 0.013767714137652372,
+  "vol01_am": 0.2615017361111111,
+  "unsupported_am": 0.0,
+  "seconds_am": 246.6592104434967,
+  "iters_am": 60,
+  "stiffnessCostPct": -3.579064727128778
+ }
+}
