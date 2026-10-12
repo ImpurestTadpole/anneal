@@ -28,7 +28,7 @@ def choose_level(prob, f, x):
     return float(np.clip(0.5 * (lo + hi), 0.3, 0.7))
 
 
-def keep_load_paths(prob, f, level, log=print, margin=0.1, max_drop=0.15):
+def keep_load_paths(prob, f, level, log=print, margin=0.1, max_drop=0.15, repair=True):
     """Make sure every load anchor connects to a fixed anchor through material at least `margin`
     above the iso level, so the connection survives smoothing and re-voxelization.
 
@@ -63,6 +63,10 @@ def keep_load_paths(prob, f, level, log=print, margin=0.1, max_drop=0.15):
     if level < level0:
         log(f"  iso level lowered {level0:.2f} -> {level:.2f} to keep load paths connected")
     if not cut:
+        return f, level
+    if not repair:
+        log(f"  WARNING: anchor(s) {[n for n, _ in cut]} are not connected to a support and path repair is off. "
+            f"Turn repair on, or raise volumeFraction or iterations.")
         return f, level
     need = state["need"]
     act = np.flatnonzero(prob.active)

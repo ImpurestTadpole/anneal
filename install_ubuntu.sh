@@ -21,10 +21,14 @@ source .venv/bin/activate
 uv pip install -e .
 uv pip install cadquery-ocp || echo "STEP support not installed (no wheel for this system). Export STL from CAD instead."
 
+python -m anneal shortcut || true
+
 echo
 python -m anneal validate
 echo
 echo "Installed. Use:"
 echo "  source $(pwd)/.venv/bin/activate"
-echo "  anneal init your-part.stl        # writes your-part.anneal.json; edit the anchors"
+echo "  anneal gui                        # the graphical interface, in your browser"
+echo "  (or open Anneal from the applications menu)"
+echo "  anneal init your-part.stl        # command line: writes your-part.anneal.json"
 echo "  anneal run your-part.anneal.json --open"

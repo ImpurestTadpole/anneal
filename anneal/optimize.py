@@ -48,7 +48,7 @@ class Filter:
 
 
 def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
-         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None):
+         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX):
     t_start = time.time()
     fem = FEM(grid, active, fixed, nu, log=log)
     act = fem.act
@@ -98,7 +98,7 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
     base_iters = None
     p = 1.0
     if warm:
-        beta[0] = BETA_MAX / 2
+        beta[0] = beta_max / 2
     xPhys = physical(x)
     beta_step = max(5, int(0.12 * iters))
     beta_since = 0
@@ -108,11 +108,11 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         # continuation: 0.25 steps, held long enough to reach p_final within 40 % of the budget
         hold = max(1, min(3, int(0.4 * iters / max((p_final - 1.0) / 0.25, 1))))
         p = p_final if warm else min(p_final, 1.0 + 0.25 * ((it - 1) // hold))
-        if p >= p_final and not warm:     # projection continuation after the penalty ramp
+        if p >= p_final and not warm and beta_max > 0:   # projection continuation after the penalty ramp
             if beta[0] == 0:
                 beta[0], beta_since = 1.0, 0
-            elif beta_since >= beta_step and beta[0] < BETA_MAX:
-                beta[0], beta_since = min(BETA_MAX, 2 * beta[0]), 0
+            elif beta_since >= beta_step and beta[0] < beta_max:
+                beta[0], beta_since = min(beta_max, 2 * beta[0]), 0
             beta_since += 1
         xPhys, dxp = physical(x, with_grad=True)
         Ee = E0 * phi * (EMIN + xPhys ** p * (1 - EMIN))
@@ -170,7 +170,7 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         log(f"  it {it:3d}  p {p:.2f}  b {beta[0]:.0f}  obj {obj:.4g}  vol {hist[-1]['volumeFraction']:.3f}  "
             f"change {change:.3f}  grey {grey:.2f}  cg {fem.cg_iters[-1]}{' amg' if rebuild else ''}  "
             f"{hist[-1]['seconds']:.1f}s")
-        if p >= p_final and beta[0] >= BETA_MAX and it > (5 if warm else 10) and change < tol:
+        if p >= p_final and beta[0] >= beta_max and it > (5 if warm else 10) and change < tol:
             log(f"  converged at iteration {it}")
             break
 

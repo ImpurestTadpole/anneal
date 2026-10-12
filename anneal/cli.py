@@ -138,6 +138,17 @@ def main(argv=None):
     a.add_argument("--out")
     a.add_argument("--open", action="store_true", help="open the report when done")
     sub.add_parser("validate", help="run the solver validation gate")
+    a = sub.add_parser("gui", help="open the graphical interface in your browser")
+    a.add_argument("--workspace", help="projects folder (default: ~/Anneal Projects)")
+    a.add_argument("--port", type=int, default=8765)
+    a.add_argument("--no-browser", action="store_true")
+    a = sub.add_parser("app", help="open Anneal in its own desktop window")
+    a.add_argument("--workspace")
+    a.add_argument("--port", type=int, default=8765)
+    sub.add_parser("shortcut", help="add Anneal to the desktop and Start menu")
+    a = sub.add_parser("history", help="list past runs from the history database")
+    a.add_argument("--project")
+    a.add_argument("--limit", type=int, default=30)
     sub.add_parser("materials", help="list the material library")
     a = sub.add_parser("drop", help="drag-and-drop entry point")
     a.add_argument("path")
@@ -158,6 +169,26 @@ def main(argv=None):
             cmd_init(args.model, args.out, args.material)
         elif args.cmd == "run":
             return cmd_run(args.spec, args.out, args.open)
+        elif args.cmd == "gui":
+            from .gui.server import serve
+            serve(args.workspace, args.port, not args.no_browser)
+        elif args.cmd == "app":
+            from .gui.desktop import app
+            return app(args.workspace, args.port)
+        elif args.cmd == "shortcut":
+            from .gui.desktop import shortcut
+            return shortcut()
+        elif args.cmd == "history":
+            from . import db
+            from .gui.server import default_workspace
+            db.index_workspace(default_workspace())
+            rows = db.query(project=args.project, limit=args.limit)
+            if not rows:
+                print("No runs recorded yet.")
+            for r in rows:
+                print(f"  {r['created'] or '':20s} {r['project']:24.24s} {r['material'] or '':14s} "
+                      f"{r['mass_g'] or 0:8.1f} g  {r['max_disp_mm'] or 0:.4g} mm  "
+                      f"SF {r['safety_factor'] or 0:.2f}  {'OK  ' if r['all_ok'] else 'FAIL'}  {r['run_dir']}")
         elif args.cmd == "validate":
             from .validate import run_all
             print("Solver validation gate")

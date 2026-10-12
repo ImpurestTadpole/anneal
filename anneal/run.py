@@ -63,10 +63,15 @@ def evaluate(prob, fill, label, log):
     res = {"label": label, "massG": float(fill.sum() * g.h ** 3 * prob.material["density"] / 1000),
            "volumeCM3": float(fill.sum() * g.h ** 3 / 1000), "cases": {}}
     worst_disp, worst_sig = 0.0, 0.0
+    u_fields, vm_fields = {}, {}
     for c, u_r in zip(prob.cases, Us):
         u = fem.expand(u_r)
         mag = np.linalg.norm(u.reshape(-1, 3), axis=1)
         vm = fem.von_mises(u, E0)
+        u_fields[c] = u.reshape(-1, 3).astype(np.float32)
+        vm_full = np.zeros(g.nelem, np.float32)
+        vm_full[fem.act] = vm
+        vm_fields[c] = vm_full
         pool = vm[solid & ~near] if (solid & ~near).any() else vm
         peak = float(np.percentile(pool, 99.5))
         load_disp = {a.name: float(mag[anchor_nodes[a.name]].mean())
@@ -80,8 +85,20 @@ def evaluate(prob, fill, label, log):
     res["maxDisplacementMM"] = worst_disp
     res["peakStressMPa"] = worst_sig
     res["safetyFactor"] = prob.material["yield"] / worst_sig if worst_sig > 0 else float("inf")
-    res["_fields"] = {"active": active}
+    res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields}
     return res
+
+
+def save_fields(path, grid, res):
+    """Nodal displacement (mm) and element von Mises stress (MPa) per load case, for viewers."""
+    if res is None:
+        return
+    arrays = {"origin": grid.origin, "h": np.array([grid.h]), "shape": np.array(grid.shape)}
+    for c, u in res["_fields"]["u"].items():
+        arrays[f"u::{c}"] = u
+    for c, vm in res["_fields"]["vm"].items():
+        arrays[f"vm::{c}"] = vm
+    np.savez_compressed(path, **arrays)
 
 
 def checks(prob, built, thick):
@@ -152,7 +169,7 @@ def next_volume_fraction(passes, limit, tol=0.01):
     return v
 
 
-def run(spec_path, out_dir=None, log=print):
+def run(spec_path, out_dir=None, log=print, db_path=None):
     t0 = time.time()
     log(f"Anneal {__version__} — {spec_path}")
     prob = Problem(spec_path, log=log)
@@ -180,12 +197,16 @@ def run(spec_path, out_dir=None, log=print):
                    iters=int(opt.get("iterations", 80)) if x0 is None else max(15, int(opt.get("iterations", 80)) * 2 // 5),
                    r_mm=r_mm, x0=x0,
                    p_final=float(opt.get("penalty", 3.0)), move=float(opt.get("move", 0.2)),
-                   combine=prob.combine, log=log)
+                   combine=prob.combine, log=log, beta_max=float(opt.get("sharpness", 4.0)))
         x = res["x"]
         log("Generating the surface")
         f = output_field(prob, x)
-        level = choose_level(prob, f, x)
-        f, level = keep_load_paths(prob, f, level, log=log)
+        iso = prob.out_opts.get("isoLevel", "auto")
+        level = choose_level(prob, f, x) if iso in (None, "auto") else float(iso)
+        lp = prob.spec.get("loadPaths", {})
+        if lp.get("guard", True):
+            f, level = keep_load_paths(prob, f, level, log=log, margin=float(lp.get("margin", 0.1)),
+                                       max_drop=float(lp.get("maxDrop", 0.15)), repair=bool(lp.get("repair", True)))
         mesh = surface(g, f, level, upsample=int(prob.out_opts.get("upsample", 2)),
                        smooth=int(prob.out_opts.get("smoothing", 10)), log=log)
         log(f"  {len(mesh.faces):,} triangles, watertight: {mesh.is_watertight}")
@@ -239,14 +260,21 @@ def run(spec_path, out_dir=None, log=print):
                "massG": p["built"]["massG"]} for p in passes]
 
     stl = os.path.join(out_dir, f"{prob.name}-optimized.stl")
-    mesh.export(stl)
+    mesh.export(stl)          # always written: the viewer and the as-built check use it
     files = [stl]
-    try:
-        p3 = os.path.join(out_dir, f"{prob.name}-optimized.3mf")
-        mesh.export(p3)
-        files.append(p3)
-    except Exception as e:  # 3MF needs optional packages; STL is always written
-        log(f"  (3MF not written: {e.__class__.__name__}; STL is complete)")
+    for fmt in prob.out_opts.get("formats", ["stl", "3mf"]):
+        fmt = str(fmt).lower().lstrip(".")
+        if fmt == "stl":
+            continue
+        if fmt not in ("3mf", "obj", "ply", "glb", "off"):
+            log(f"  output format '{fmt}' is not supported; use stl, 3mf, obj, ply, glb or off")
+            continue
+        try:
+            pth = os.path.join(out_dir, f"{prob.name}-optimized.{fmt}")
+            mesh.export(pth)
+            files.append(pth)
+        except Exception as e:  # some formats need optional packages; STL is always written
+            log(f"  ({fmt.upper()} not written: {e.__class__.__name__}; STL is complete)")
     prob.derived["isoLevel"] = level
     original = None
     if prob.mesh is not None:
@@ -261,6 +289,8 @@ def run(spec_path, out_dir=None, log=print):
             + (f" — {c['fix']}" if c["fix"] else ""))
 
     np.save(os.path.join(out_dir, "density.npy"), g.to3d(x).astype(np.float32))
+    save_fields(os.path.join(out_dir, "fields-optimized.npz"), g, built)
+    save_fields(os.path.join(out_dir, "fields-original.npz"), g, original)
     record = {
         "passes": passes,
         "anneal": __version__, "createdUTC": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -281,9 +311,26 @@ def run(spec_path, out_dir=None, log=print):
     with open(os.path.join(out_dir, "run.json"), "w", encoding="utf-8") as fh:
         json.dump(record, fh, indent=2, default=float)
     shutil.copy(spec_path, os.path.join(out_dir, "spec.json"))
-    view = mesh
-    if len(mesh.faces) > 160_000:
-        view = surface(g, f, level, upsample=1, smooth=int(prob.out_opts.get("smoothing", 10)), log=lambda *a: None)
-    html = report.write(out_dir, prob, res, view, built, original, chk, thick, record)
-    log(f"Done in {time.time() - t0:.0f} s. Report: {html}")
+    html = None
+    if prob.out_opts.get("report", True):
+        view = mesh
+        if len(mesh.faces) > 160_000:
+            view = surface(g, f, level, upsample=1, smooth=int(prob.out_opts.get("smoothing", 10)), log=lambda *a: None)
+        html = report.write(out_dir, prob, res, view, built, original, chk, thick, record)
+    copy_to = prob.out_opts.get("copyTo")
+    if copy_to:
+        try:
+            os.makedirs(copy_to, exist_ok=True)
+            for pth in files:
+                shutil.copy(pth, copy_to)
+            log(f"  copied {len(files)} file(s) to {copy_to}")
+        except OSError as e:
+            log(f"  WARNING: could not copy the outputs to {copy_to}: {e}")
+    if db_path is not False:
+        try:
+            from . import db
+            db.record_run(out_dir, record, prob.name, db_path)
+        except Exception as e:  # the run is complete even if the history database is not writable
+            log(f"  (run not added to the history database: {e})")
+    log(f"Done in {time.time() - t0:.0f} s." + (f" Report: {html}" if html else f" Files in {out_dir}"))
     return record, html

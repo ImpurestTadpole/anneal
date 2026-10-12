@@ -31,10 +31,16 @@ python -m pip install -e . || (echo Installing the core packages failed. & pause
 echo Installing optional STEP support ...
 python -m pip install cadquery-ocp || echo STEP support not installed. Export STL from CAD instead.
 
+echo Installing the desktop window (uses Microsoft Edge WebView2, part of Windows 10/11) ...
+python -m pip install pywebview || echo Desktop window not installed. Anneal will open in your browser instead.
+
+echo Adding Anneal to the desktop and the Start menu ...
+python -m anneal shortcut
+
 echo.
 echo Checking the solver ...
 python -m anneal validate
 echo.
-echo Installed. Drag a model (STL or STEP) onto Anneal.bat to start,
-echo or run:  .venv\Scripts\anneal run examples\bracket.json
+echo Installed. Open Anneal from the icon on your desktop or in the Start menu.
+echo You can also drag a model onto Anneal.bat, or run:  .venv\Scripts\anneal run examples\bracket.json
 pause

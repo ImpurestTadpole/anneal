@@ -1,9 +1,12 @@
 # Anneal
 
-Anneal makes an existing part lighter and stiffer. You give it a model (STL or STEP) and a short
-spec file that says where the part is held and where it is loaded. Anneal removes the material
-that does not carry load, makes a smooth printable surface, solves the new part again to check
-it, and writes a report.
+Anneal makes an existing part lighter and stiffer. You open a model (STL or STEP), click where the
+part is held and where it is loaded, and set a goal. Anneal removes the material that does not
+carry load, makes a smooth printable surface, solves the new part again to check it, and keeps a
+record of every run.
+
+You can use it three ways: the **desktop app** (an icon on your desktop), the **same app in your
+browser**, or the **command line** with a spec file. All three write the same files.
 
 ```
 your-part.step  +  your-part.anneal.json   ──►   your-part-optimized.stl / .3mf  +  report.html
@@ -21,8 +24,12 @@ It runs on **Windows 10/11** and **Ubuntu 20.04 or newer** (also macOS). It need
    Keep the default options.
 2. Unzip Anneal to a folder, for example `C:\Anneal`.
 3. Double-click **`install_windows.bat`**. It makes a private environment in `.venv`, installs
-   the packages, adds STEP support, and runs the solver checks. The last lines must say
+   the packages, adds STEP support and the desktop window, puts an **Anneal** icon on the desktop
+   and in the Start menu, and runs the solver checks. The last lines must say
    `GATE: OPEN - 6 of 6 checks pass`.
+
+**Updating from 0.1.0:** unzip the new version over the old folder (or into a new folder) and run
+`install_windows.bat` again. It is quick the second time; the packages are cached.
 
 ### Ubuntu 20.04
 
@@ -49,6 +56,46 @@ python -m anneal validate
 
 ## 2. Use it
 
+### The app
+
+Open **Anneal** from the desktop or the Start menu (Linux: the applications menu, or `anneal gui`).
+On Windows it opens in its own window, drawn by Microsoft Edge WebView2, which is part of
+Windows 10/11. Without it, Anneal opens in your browser. Everything stays on your PC: the app is a
+small local server at `http://127.0.0.1:8765` and works offline.
+
+1. **Open a part.** Drop an STL, STEP, OBJ or 3MF on the window, or choose one. Each model becomes a
+   project in your user folder, in `Anneal Projects\<name>` (for example
+   `C:\Users\<you>\Anneal Projects\bracket`). The project folder also holds the spec file, so the
+   command line can run the same setup.
+2. **Supports and loads.** Click *Add support*, then click a bolt hole or a face on the part.
+   A hole becomes a ring around its wall (Anneal measures its diameter); a flat face becomes a thin
+   slab on it; *A round patch at the click* selects a spot. Hold Shift to pick several. Then
+   *Add load*, click where the force acts, and type the force in newtons and its direction.
+   *Add keep-out* keeps a space empty (clearance for a bolt head or a mating part);
+   *Add keep-solid* keeps a wall solid. Add load cases if the part sees more than one load.
+3. **Material and goal.** Pick the material (or type your own values), then either
+   *Lightest part that meets the limits* or *Keep a fixed share of the material*.
+4. **Optimizer, load paths and output.** Every setting of the spec file is here, with a short
+   explanation: iterations, mass-search passes, smallest member, penalty, move limit, edge
+   sharpness; the load-path guard (keep every load connected, required density, largest level drop,
+   path repair); output formats (STL, 3MF, OBJ, PLY, GLB), smoothing, surface detail, surface
+   level, report, and a folder to copy the results to (for example your slicer's folder).
+5. **Check and run.** *Check setup* solves the original part at draft resolution in seconds and
+   colours it by displacement or stress, so you can see that supports hold and loads push the way
+   you expect. *Optimize* runs the full job with a live chart and log. *Stop* ends it.
+6. **Result.** Mass, stiffness per gram, displacement and safety factor against the original; every
+   check with its fix; *Displacement*, *Stress* and *Deformed* views; the original as a ghost;
+   download buttons; star and notes; *Use this run's settings*.
+
+**History** lists every run on this PC, from the app and from the command line, in a database
+(`~/Anneal Projects/anneal.db`, SQLite). Search, filter by project, material, passed or starred,
+sort by mass or stiffness, add notes (for example what you printed and how it tested), open a run,
+reuse its settings in the current project, or tick two runs to compare them: the table shows the
+results side by side and only the settings that differ. If the database is lost, Anneal rebuilds
+it from the run folders.
+
+**Quit** (top right) stops Anneal. Opening the icon again while Anneal runs shows the running one.
+
 ### On Windows, by drag and drop
 
 1. Drag your model (`.stl`, `.step`, `.obj`, …) onto **`Anneal.bat`**.
@@ -67,6 +114,10 @@ anneal init part.step               # writes part.anneal.json (edit the anchors)
 anneal run part.anneal.json --open  # optimize, check, report
 anneal validate                     # solver checks
 anneal materials                    # material library
+anneal gui                          # the app in your browser
+anneal app                          # the app in its own window
+anneal history                      # past runs from the database
+anneal shortcut                     # add the desktop / Start menu icon again
 ```
 
 ### Try the example first
@@ -80,7 +131,7 @@ anneal run examples/bracket.json --open
 keeps a 12 mm clearance hole through the arm, and asks for the lightest part that deflects
 0.30 mm or less.
 
-Result at `normal` resolution (included in `examples/runs/bracket/`): **405 g → 108 g (−73 %)**,
+Result from the command line at `normal` resolution (included in `examples/runs/bracket/`): **405 g → 108 g (−73 %)**,
 maximum displacement 0.274 mm (limit 0.30), safety factor 2.73, **1.46× stiffer per gram** than the
 solid original. Three passes of the mass search, 24 minutes on a 2-core machine.
 
@@ -111,9 +162,12 @@ size, filter radius, surface level, multigrid settings) is derived, and the repo
 
   "loadCases": { "down": {"weight": 1}, "side": {"weight": 1} },
   "objective": { "minimise": "mass", "volumeFraction": 0.30, "combine": "worst" },
-  "optimizer": { "iterations": 70, "minMemberMM": 6 },
+  "optimizer": { "iterations": 70, "massPasses": 5, "minMemberMM": 6,   // minMemberMM optional (auto)
+                 "penalty": 3, "move": 0.2, "sharpness": 4 },
   "limits":    { "maxDisplacementMM": 0.30, "minSafetyFactor": 2.0 },
-  "output":    { "smoothing": 10, "upsample": 2 }
+  "loadPaths": { "guard": true, "margin": 0.1, "maxDrop": 0.15, "repair": true },
+  "output":    { "formats": ["stl", "3mf"], "smoothing": 10, "upsample": 2,
+                 "isoLevel": "auto", "report": true, "copyTo": "D:/Prints/brackets" }   // copyTo optional
 }
 ```
 
@@ -136,7 +190,8 @@ geometry.
 - `dofs` (fixed only): which directions are held, `"xyz"` (bolted) or for example `"z"` (resting on a surface).
 - `loads` (load only): `{ "caseName": [Fx, Fy, Fz] }` in newtons. The force is spread evenly over
   the selected nodes. Different anchors can share case names.
-- `region`: what to select. Types: `box` (min, max), `sphere` (center, r), `cylinder` (from, to, r),
+- `region`: what to select. Types: `box` (min, max), `obox` (center, normal, xdir, size: an oriented
+  box, which the app makes when you click a flat face), `sphere` (center, r), `cylinder` (from, to, r),
   `pipe` (from, to, r, rIn). **For a hole that is already in the model, use a `pipe` that
   straddles the hole wall:** `rIn` a little inside the hole radius, `r` a little outside.
 - `feature`: geometry that Anneal adds and holds. Use it when you start from rough points:
@@ -152,6 +207,27 @@ geometry.
   volume fraction that meets the displacement limit (up to 5 passes, each later pass
   starts from the previous design). Without it, the volume fraction is used as given.
 - `combine`: `"sum"` (weighted total stiffness) or `"worst"` (stiffest worst case, a p-norm).
+
+### Optimizer, load paths and output
+
+| Key | Default | Meaning |
+|---|---|---|
+| `optimizer.iterations` | 80 | Iterations per pass. 60+ for a part you make; under 25 Anneal warns. |
+| `optimizer.massPasses` | 5 | Most passes in the lightest-part search. |
+| `optimizer.minMemberMM` | auto | Smallest member (sets the filter radius). Auto: 6 voxels or 2 × the material's minimum wall. |
+| `optimizer.penalty` | 3 | SIMP penalty for grey material. |
+| `optimizer.move` | 0.2 | Largest density change per iteration. |
+| `optimizer.sharpness` | 4 | Heaviside projection strength. 0 turns it off; above 8 can stall. |
+| `loadPaths.guard` | true | Before the surface is made, check that every load connects to a support. |
+| `loadPaths.margin` | 0.1 | Density the connection needs above the surface level. |
+| `loadPaths.maxDrop` | 0.15 | Largest drop of the surface level allowed to reconnect a load. |
+| `loadPaths.repair` | true | If still cut, add material along the cheapest path. |
+| `output.formats` | stl, 3mf | Also obj, ply, glb. STL is always written. |
+| `output.smoothing` | 10 | Taubin smoothing passes on the surface. |
+| `output.upsample` | 2 | Surface detail: 1 = voxel size, 2 or 3 = finer (larger files). |
+| `output.isoLevel` | auto | Surface level. Auto keeps the optimized volume; a number 0.1–0.9 (lower = thicker). |
+| `output.report` | true | Write the HTML report. |
+| `output.copyTo` | – | Also copy the part files to this folder. |
 
 ### Limits and checks
 
@@ -197,6 +273,10 @@ model ──► voxelize (fill fractions) ──► anchors, keep-outs, frozen r
 | `problem.py` | Spec → grid, anchors, guard rails with fixes | Engineering model |
 | `export.py`, `run.py`, `report.py` | Load-path guard, surface, as-built re-solve, checks, mass search, record | Run harness |
 | `materials.py` | Material and process data | Library |
+| `pick.py` | Click on the model → hole (fitted cylinder), flat face (oriented slab) or patch | GUI |
+| `fields.py` | Displacement and stress at the corners of the displayed mesh | GUI |
+| `db.py` | Run history in SQLite, rebuilt from run folders if needed | Record |
+| `gui/server.py`, `gui/desktop.py`, `gui/static/` | Local server, desktop window, page (three.js r160, MIT, included) | GUI |
 | `validate.py` | 6-check solver gate | Validation |
 
 Design rules carried over from the Phase 0 spike:
@@ -229,7 +309,7 @@ Design rules carried over from the Phase 0 spike:
 | V5 deterministic reruns | identical SHA-256 |
 | V6 SIMP vs uniform at equal mass | about 92 % lower compliance |
 
-Fast tests: `pip install pytest` then `python -m pytest -q`.
+Fast tests: `pip install pytest` then `python -m pytest -q` (15 tests, about 40 s).
 
 ---
 
@@ -256,5 +336,5 @@ Fast tests: `pip install pytest` then `python -m pytest -q`.
 - Chrono sidecar for loads from simulated events (drop, landing), as in the method document.
 - Overhang constraints, and a minimum-size constraint that holds after thresholding.
 
-Third-party licences: numpy, scipy, scikit-image, matplotlib (BSD-3), pyamg, trimesh (MIT),
-optional cadquery-ocp / OpenCASCADE (LGPL-2.1 with the OCCT exception).
+Third-party licences: numpy, scipy, scikit-image, matplotlib (BSD-3), pyamg, trimesh, three.js (MIT),
+optional pywebview (BSD-3), optional cadquery-ocp / OpenCASCADE (LGPL-2.1 with the OCCT exception).

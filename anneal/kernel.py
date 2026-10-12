@@ -138,7 +138,7 @@ class Union(Shape):
 def make_region(d, where="region"):
     """Build a shape from a spec dict: box / sphere / cylinder / pipe."""
     if not isinstance(d, dict) or "type" not in d:
-        raise ValueError(f"{where}: give a dict with 'type' (box, sphere, cylinder or pipe).")
+        raise ValueError(f"{where}: give a dict with 'type' (box, obox, sphere, cylinder or pipe).")
     t = d["type"]
     try:
         if t == "box":
@@ -149,11 +149,14 @@ def make_region(d, where="region"):
             return Cylinder(d["from"], d["to"], d["r"])
         if t == "pipe":
             return Cylinder(d["from"], d["to"], d["r"], d["rIn"])
+        if t == "obox":
+            size = np.asarray(d["size"], float)
+            return Box(frame=Frame(d["center"], d["normal"], d.get("xdir")), size=size, z0=-size[2] / 2)
     except KeyError as k:
         need = {"box": "min, max", "sphere": "center, r", "cylinder": "from, to, r",
-                "pipe": "from, to, r, rIn"}[t]
+                "pipe": "from, to, r, rIn", "obox": "center, normal, size (xdir optional)"}[t]
         raise ValueError(f"{where}: a {t} needs {need}; {k} is missing.") from None
-    raise ValueError(f"{where}: unknown type '{t}'. Use box, sphere, cylinder or pipe.")
+    raise ValueError(f"{where}: unknown type '{t}'. Use box, obox, sphere, cylinder or pipe.")
 
 
 def fill_fraction(shape, centers, h):

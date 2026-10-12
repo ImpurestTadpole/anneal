@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anneal"
-version = "0.1.0"
+version = "0.2.0"
 description = "Topology optimization of existing parts on a voxel grid: drop in a model, get a lighter, stiffer part."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,10 +20,14 @@ dependencies = [
 
 [project.optional-dependencies]
 step = ["cadquery-ocp>=7.7"]
+desktop = ["pywebview>=5.0"]
 test = ["pytest>=7"]
 
 [project.scripts]
 anneal = "anneal.cli:main"
 
 [tool.setuptools]
-packages = ["anneal"]
+packages = ["anneal", "anneal.gui"]
+
+[tool.setuptools.package-data]
+"anneal.gui" = ["static/*", "static/vendor/*", "static/vendor/addons/*/*"]
