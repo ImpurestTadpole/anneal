@@ -1,0 +1,179 @@
+{
+  "name": "bracket-pla",
+  "model": "bracket.step",
+  "designSpace": "model",
+  "material": {
+    "name": "PLA example (illustrative values)",
+    "E": 3500,
+    "nu": 0.36,
+    "density": 1.24,
+    "yield": 50,
+    "Ez": 2400,
+    "zStrengthFactor": 0.5,
+    "minWallMM": 1.0,
+    "process": "FDM",
+    "note": "Illustrative inputs for the print-aware demo, not measured data."
+  },
+  "resolution": "normal",
+  "anchors": [
+    {
+      "name": "bolt-1",
+      "role": "fixed",
+      "dofs": "xyz",
+      "freezeMM": 3,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          10,
+          10
+        ],
+        "to": [
+          10,
+          10,
+          10
+        ],
+        "r": 4.4,
+        "rIn": 2.4
+      }
+    },
+    {
+      "name": "bolt-2",
+      "role": "fixed",
+      "dofs": "xyz",
+      "freezeMM": 3,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          50,
+          10
+        ],
+        "to": [
+          10,
+          50,
+          10
+        ],
+        "r": 4.4,
+        "rIn": 2.4
+      }
+    },
+    {
+      "name": "bolt-3",
+      "role": "fixed",
+      "dofs": "xyz",
+      "freezeMM": 3,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          10,
+          50
+        ],
+        "to": [
+          10,
+          10,
+          50
+        ],
+        "r": 4.4,
+        "rIn": 2.4
+      }
+    },
+    {
+      "name": "bolt-4",
+      "role": "fixed",
+      "dofs": "xyz",
+      "freezeMM": 3,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          50,
+          50
+        ],
+        "to": [
+          10,
+          50,
+          50
+        ],
+        "r": 4.4,
+        "rIn": 2.4
+      }
+    },
+    {
+      "name": "load-bore",
+      "role": "load",
+      "freezeMM": 3,
+      "region": {
+        "type": "pipe",
+        "from": [
+          95,
+          15,
+          40
+        ],
+        "to": [
+          95,
+          45,
+          40
+        ],
+        "r": 7.2,
+        "rIn": 5.0
+      },
+      "loads": {
+        "down": [
+          0,
+          0,
+          -200
+        ],
+        "side": [
+          0,
+          60,
+          0
+        ]
+      }
+    }
+  ],
+  "keepOut": [
+    {
+      "type": "cylinder",
+      "from": [
+        55,
+        10,
+        30
+      ],
+      "to": [
+        55,
+        50,
+        30
+      ],
+      "r": 6
+    }
+  ],
+  "loadCases": {
+    "down": {
+      "weight": 1.0
+    },
+    "side": {
+      "weight": 1.0
+    }
+  },
+  "objective": {
+    "minimise": "mass",
+    "volumeFraction": 0.3,
+    "combine": "worst"
+  },
+  "optimizer": {
+    "iterations": 70
+  },
+  "limits": {
+    "maxDisplacementMM": 0.3,
+    "minSafetyFactor": 2.0
+  },
+  "output": {
+    "smoothing": 10
+  },
+  "process": "FDM",
+  "physics": {
+    "anisotropic": true
+  }
+}
