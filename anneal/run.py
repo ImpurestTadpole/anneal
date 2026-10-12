@@ -165,6 +165,9 @@ def run(spec_path, out_dir=None, log=print):
     fixed, F, info = prob.boundary(prob.active)
     log("  anchor nodes: " + ", ".join(f"{k} {v}" for k, v in info.items()))
     opt = prob.opt
+    if int(opt.get("iterations", 80)) < 25:
+        log("  WARNING: fewer than 25 iterations leaves the design grey; the exported part will be heavier "
+            "than the target. Use 60 or more for a part you will make.")
     # D9: members at least 6 voxels thick unless the user asks for a larger minimum
     min_member = float(opt.get("minMemberMM", max(2 * prob.material.get("minWallMM", 0), 6 * g.h)))
     r_mm = max(min_member / 2, 1.5 * g.h)
@@ -181,7 +184,8 @@ def run(spec_path, out_dir=None, log=print):
         x = res["x"]
         log("Generating the surface")
         f = output_field(prob, x)
-        level = keep_load_paths(prob, f, choose_level(prob, f, x), log=log)
+        level = choose_level(prob, f, x)
+        f, level = keep_load_paths(prob, f, level, log=log)
         mesh = surface(g, f, level, upsample=int(prob.out_opts.get("upsample", 2)),
                        smooth=int(prob.out_opts.get("smoothing", 10)), log=log)
         log(f"  {len(mesh.faces):,} triangles, watertight: {mesh.is_watertight}")
@@ -228,6 +232,9 @@ def run(spec_path, out_dir=None, log=print):
     res, x, f, level, mesh, fill_b, built, thick = (best[k] for k in
                                                     ("res", "x", "f", "level", "mesh", "fill_b", "built", "thick"))
     prob.vf = best["vf"]
+    res["all_history"] = [(f"pass {i + 1}: vf {p['vf']:.3f}", p["res"]["history"]) for i, p in enumerate(passes)] \
+        if len(passes) > 1 else [("", res["history"])]
+    history_record = [{"volumeFraction": p["vf"], "history": p["res"]["history"]} for p in passes]
     passes = [{"volumeFraction": p["vf"], "maxDisplacementMM": p["built"]["maxDisplacementMM"],
                "massG": p["built"]["massG"]} for p in passes]
 
@@ -267,6 +274,7 @@ def run(spec_path, out_dir=None, log=print):
         "results": {"optimized": {k: v for k, v in built.items() if not k.startswith("_")},
                     "original": {k: v for k, v in original.items() if not k.startswith("_")} if original else None},
         "checks": chk,
+        "history": history_record,
         "outputs": {os.path.basename(p): _sha(p) for p in files},
         "totalSeconds": time.time() - t0,
     }

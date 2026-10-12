@@ -224,9 +224,9 @@ class FEM:
             u, info = _cg(K, f, x0=x0, rtol=rtol, maxiter=maxiter, M=self.M, callback=cb)
             if info != 0 or not np.all(np.isfinite(u)):
                 raise SolverError(
-                    "The solver did not converge. The part can probably move or turn freely: "
-                    "add a fixed anchor, or fix more directions (dofs) on an existing one. "
-                    "A support that fixes only one direction lets the part slide or spin.")
+                    f"The solver did not converge in {maxiter} iterations. Usual causes: the part can move "
+                    f"or turn freely (add a fixed anchor, or fix more directions on one), or the design has "
+                    f"pieces held only by near-empty voxels (raise volumeFraction or iterations).")
             self.cg_iters.append(count[0])
             out.append(u)
         return out

@@ -29,28 +29,37 @@ def _style(ax):
     ax.grid(axis="y", color=GRID, lw=0.6)
 
 
-def convergence_png(hist):
-    it = [h["iter"] for h in hist]
-    obj = np.array([h["objective"] for h in hist])
-    ramp_end = next((h["iter"] for h in hist if h["p"] >= hist[-1]["p"]), None)
-    fig, (a, b) = plt.subplots(1, 2, figsize=(9.6, 2.8), gridspec_kw={"wspace": 0.32})
-    a.plot(it, obj / obj[0], color=ACCENT, lw=1.6)
-    a.set_xlabel("iteration")
-    a.set_ylabel("objective / first iteration")
-    a.set_title("Objective: rises while the penalty ramps, then falls", fontsize=9, color=INK, loc="left")
-    b.plot(it, [h["grey"] for h in hist], color=ACCENT, lw=1.6, label="grey fraction")
-    b.plot(it, [h["change"] for h in hist], color=ORIG, lw=1.2, label="largest change")
-    b.set_xlabel("iteration")
+def convergence_png(passes):
+    """passes: list of (label, history). Draws all passes end to end."""
+    fig, (a, b) = plt.subplots(1, 2, figsize=(9.6, 2.9), gridspec_kw={"wspace": 0.32})
+    x0 = 0
+    first = passes[0][1][0]["objective"]
+    for k, (label, hist) in enumerate(passes):
+        it = np.arange(len(hist)) + x0 + 1
+        col = ACCENT if k == len(passes) - 1 else ORIG
+        a.plot(it, [h["objective"] / hist[0]["objective"] for h in hist], color=col, lw=1.6)
+        b.plot(it, [h["grey"] for h in hist], color=col, lw=1.6)
+        b.plot(it, [h["change"] for h in hist], color=col, lw=1.0, ls=":")
+        ramp = next((i for i, h in enumerate(hist) if h["p"] >= hist[-1]["p"]), 0)
+        if ramp > 0:
+            a.axvline(x0 + ramp + 1, color=QUIET, lw=0.7, ls="--")
+            a.annotate("full penalty", (x0 + ramp + 1, 1.0), xytext=(3, 0), textcoords="offset points",
+                       fontsize=7, color=QUIET)
+        if len(passes) > 1:
+            a.annotate(label, (x0 + 1, 0.0), xycoords=("data", "axes fraction"), xytext=(2, 3),
+                       textcoords="offset points", fontsize=7, color=QUIET)
+            if k:
+                for ax in (a, b):
+                    ax.axvline(x0 + 0.5, color=GRID, lw=1.2)
+        x0 += len(hist)
+    a.set_xlabel("iteration (all passes)")
+    a.set_ylabel("objective / pass start")
+    a.set_title("Objective per pass" + (" (blue = chosen)" if len(passes) > 1 else ""), fontsize=9, color=INK, loc="left")
+    b.set_xlabel("iteration (all passes)")
     b.set_ylim(0, 1)
-    b.set_title("Design settles", fontsize=9, color=INK, loc="left")
-    b.legend(frameon=False, fontsize=8, labelcolor=QUIET, loc="upper right")
+    b.set_title("Grey fraction (solid) and largest change (dotted)", fontsize=9, color=INK, loc="left")
     for ax in (a, b):
         _style(ax)
-        if ramp_end and ramp_end > 1:
-            ax.axvline(ramp_end, color=QUIET, lw=0.8, ls="--")
-    if ramp_end and ramp_end > 1:
-        a.annotate("full penalty", (ramp_end, a.get_ylim()[1]), xytext=(4, -10), textcoords="offset points",
-                   fontsize=7.5, color=QUIET)
     return _png(fig)
 
 
@@ -125,7 +134,7 @@ def write(out_dir, prob, res, mesh, built, original, chk, thick, record):
     derived_rows = "".join(f"<tr><td>{H.escape(k)}</td><td>{H.escape(_f(v, 4) if not isinstance(v, list) else ' × '.join(map(str, v)))}</td></tr>"
                            for k, v in d.items())
     opt = record["optimizer"]
-    conv = convergence_png(res["history"])
+    conv = convergence_png(res.get("all_history") or [("", res["history"])])
     proj = projections_png(prob.grid, res["x"], prob.fill)
     files = "".join(f"<li><code>{H.escape(k)}</code></li>" for k in list(record["outputs"]) + ["run.json", "density.npy", "spec.json"])
     tile_html = "".join(f"<div class='tile'><div class='k'>{H.escape(a)}</div><div class='v'>{H.escape(b)}</div>"
@@ -175,7 +184,8 @@ supports make stress unbounded in any linear model. Treat it as an estimate and 
 independent analysis.</p>
 
 <h2>Convergence</h2><img class="plot" src="{conv}" alt="Convergence of objective, grey fraction and change">
-<p class="note">{opt['iterations']} iterations in {opt['seconds']:.0f} s, {opt['amgBuilds']} multigrid builds.</p>
+<p class="note">Chosen pass: {opt['iterations']} iterations in {opt['seconds']:.0f} s, {opt['amgBuilds']} multigrid builds.
+The objective rises while the penalty ramps up (expected), then falls. Later passes start from the previous design at full penalty.</p>
 
 <h2>Where the material went</h2><img class="plot" src="{proj}" alt="Average density through the part from three directions">
 <p class="note">Dark = material kept through most of the depth; white = removed. Blank areas are outside the design space.</p>

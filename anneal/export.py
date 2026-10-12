@@ -28,31 +28,90 @@ def choose_level(prob, f, x):
     return float(np.clip(0.5 * (lo + hi), 0.3, 0.7))
 
 
-def keep_load_paths(prob, f, level, log=print, floor=0.08):
-    """Lower the iso level until every anchor's frozen material is connected to a fixed anchor."""
+def keep_load_paths(prob, f, level, log=print, margin=0.1, max_drop=0.15):
+    """Make sure every load anchor connects to a fixed anchor through material at least `margin`
+    above the iso level, so the connection survives smoothing and re-voxelization.
+
+    Stage 1: lower the iso level by up to max_drop. Stage 2 (last resort): add material along the
+    cheapest voxel path (Dijkstra; each voxel costs the density it lacks). Returns (field, level)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
     g = prob.grid
-    centres = None
+    centres = g.elem_centers()
     groups = []
     for a in prob.anchors:
-        if centres is None:
-            centres = g.elem_centers()
         sel = (a.region.sdf(centres) <= 2.5 * g.h) & prob.active
         if sel.any():
             groups.append((a.name, a.role, np.flatnonzero(sel)))
-    t = level
-    while True:
-        lab, _ = ndimage.label(g.to3d(f > t))
+    f = f.copy()
+    state = {"need": min(level + margin, 0.95)}
+
+    def broken():
+        lab, _ = ndimage.label(g.to3d(f > state["need"]))
         lab = g.to1d(lab)
         fixed_labels = {int(l) for n, r, e in groups if r == "fixed" for l in np.unique(lab[e]) if l > 0}
-        broken = [n for n, r, e in groups if r == "load" and not (set(np.unique(lab[e]).tolist()) & fixed_labels)]
-        if not broken or t <= floor:
-            if broken:
-                log(f"  WARNING: anchor(s) {broken} stay disconnected from the supports even at level {t:.2f}. "
-                    f"Raise volumeFraction or run more iterations.")
-            elif t < level:
-                log(f"  iso level lowered {level:.2f} -> {t:.2f} so every load path stays connected")
-            return t
-        t = max(floor, t - 0.02)
+        return [(n, e) for n, r, e in groups if r == "load" and not (set(np.unique(lab[e]).tolist()) & fixed_labels)]
+
+    level0 = level
+    cut = broken()
+    while cut and level > level0 - max_drop + 1e-9:
+        level = max(0.1, level - 0.02)
+        state["need"] = min(level + margin, 0.95)
+        cut = broken()
+        if level <= 0.1:
+            break
+    if level < level0:
+        log(f"  iso level lowered {level0:.2f} -> {level:.2f} to keep load paths connected")
+    if not cut:
+        return f, level
+    need = state["need"]
+    act = np.flatnonzero(prob.active)
+    pos = np.full(g.nelem, -1)
+    pos[act] = np.arange(act.size)
+    i, j, k = g.elem_ijk(act)
+    rows, cols = [], []
+    for ok, step in ((i < g.nx - 1, 1), (j < g.ny - 1, g.nx), (k < g.nz - 1, g.nx * g.ny)):
+        a_ = act[ok]
+        b_ = a_ + step
+        m = pos[b_] >= 0
+        rows.append(pos[a_[m]])
+        cols.append(pos[b_[m]])
+    r = np.concatenate(rows)
+    c = np.concatenate(cols)
+    cost = np.maximum(0.0, need - f[act]) + 1e-3
+    W = coo_matrix((np.concatenate([cost[c], cost[r]]), (np.concatenate([r, c]), np.concatenate([c, r]))),
+                   shape=(act.size, act.size)).tocsr()
+    sources = np.unique(np.concatenate([pos[e] for n, ro, e in groups if ro == "fixed"]))
+    sources = sources[sources >= 0]
+    dist, pred, _ = dijkstra(W, indices=sources, min_only=True, return_predecessors=True)
+    added = 0
+    nb = [1, -1, g.nx, -g.nx, g.nx * g.ny, -g.nx * g.ny]
+    for name, e in cut:
+        tgt = pos[e]
+        tgt = tgt[tgt >= 0]
+        start = tgt[np.argmin(dist[tgt])]
+        if not np.isfinite(dist[start]):
+            log(f"  WARNING: anchor '{name}' cannot be reached from any support inside the design space.")
+            continue
+        path = []
+        v = start
+        while v >= 0:
+            path.append(act[v])
+            v = pred[v]
+        path = np.array(path)
+        ring = np.unique(np.concatenate([path + d for d in nb]))
+        ring = ring[(ring >= 0) & (ring < g.nelem)]
+        ring = ring[prob.active[ring]]
+        before = f.copy()
+        f[ring] = np.maximum(f[ring], np.minimum(need + 0.05, prob.fill[ring]))
+        f[path] = np.maximum(f[path], np.minimum(1.0, prob.fill[path]))
+        added += int((f > level).sum() - (before > level).sum())
+        log(f"  reconnected anchor '{name}' to the supports along a {path.size}-voxel path "
+            f"({added} voxels of material added)")
+    still = [n for n, _ in broken()]
+    if still:
+        log(f"  WARNING: anchor(s) {still} are still thinly connected. Raise volumeFraction or iterations.")
+    return f, level
 
 
 def surface(grid, f, level, upsample=2, smooth=10, log=print):

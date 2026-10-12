@@ -17,6 +17,8 @@ from .fem import FEM
 
 EMIN = 1e-6
 PNORM = 8.0
+ETA = 0.5          # Heaviside projection threshold
+BETA_MAX = 4.0     # final projection sharpness (moderate: keeps OC stable on short budgets)
 
 
 class Filter:
@@ -74,23 +76,45 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         if cur > 0:
             x[des] = np.clip(xs[des] * (Vtarget - Vfrozen) / cur, 0.001, 1.0)
 
-    def physical(xd):
-        xp = filt.forward(xd)
+    beta = [0.0]   # 0 = no projection; set > 0 once the penalty is at full strength
+
+    def project(xt):
+        b = beta[0]
+        if b <= 0:
+            return xt, np.ones_like(xt)
+        t0, t1 = np.tanh(b * ETA), np.tanh(b * (1 - ETA))
+        th = np.tanh(b * (xt - ETA))
+        return (t0 + th) / (t0 + t1), b * (1 - th ** 2) / (t0 + t1)
+
+    def physical(xd, with_grad=False):
+        xt = filt.forward(xd)
+        xp, dxp = project(xt)
         xp[frz] = 1.0
-        return xp
+        return (xp, dxp) if with_grad else xp
 
     hist = []
     U = [None] * len(cases)
     c0 = None
     base_iters = None
     p = 1.0
+    if warm:
+        beta[0] = BETA_MAX / 2
     xPhys = physical(x)
+    beta_step = max(5, int(0.12 * iters))
+    beta_since = 0
     for it in range(1, iters + 1):
         t0 = time.time()
         # continuation: hold each penalty step for a few iterations
         # continuation: 0.25 steps, held long enough to reach p_final within 40 % of the budget
         hold = max(1, min(3, int(0.4 * iters / max((p_final - 1.0) / 0.25, 1))))
         p = p_final if warm else min(p_final, 1.0 + 0.25 * ((it - 1) // hold))
+        if p >= p_final and not warm:     # projection continuation after the penalty ramp
+            if beta[0] == 0:
+                beta[0], beta_since = 1.0, 0
+            elif beta_since >= beta_step and beta[0] < BETA_MAX:
+                beta[0], beta_since = min(BETA_MAX, 2 * beta[0]), 0
+            beta_since += 1
+        xPhys, dxp = physical(x, with_grad=True)
         Ee = E0 * phi * (EMIN + xPhys ** p * (1 - EMIN))
         K = fem.assemble(Ee)
         last = fem.cg_iters[-1] if fem.cg_iters else None
@@ -114,8 +138,8 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
             coef = (r / obj) ** (PNORM - 1) * w / c0
             dc = sum(ci * d for ci, d in zip(coef, dce))
         dc = np.minimum(dc, 0.0)
-        dcx = filt.backward(dc)
-        dvx = filt.backward(phi)
+        dcx = filt.backward(dc * dxp)
+        dvx = filt.backward(phi * dxp)
 
         # OC: geometric bisection on the multiplier, bracketed around the sensitivity scale
         scale = max(float(np.mean(-dcx[des]) / max(np.mean(dvx[des]), 1e-30)), 1e-300) if des.any() else 1.0
@@ -124,7 +148,8 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         for _ in range(100):
             lam = np.sqrt(lo * hi)
             ratio = np.sqrt(np.maximum(-dcx, 0) / np.maximum(dvx * lam, 1e-300))
-            xn = np.clip(x * ratio, np.maximum(0.0, x - move), np.minimum(1.0, x + move))
+            mv = move if beta[0] <= 1 else move / 2
+            xn = np.clip(x * ratio, np.maximum(0.0, x - mv), np.minimum(1.0, x + mv))
             xn[frz] = 1.0
             vol = (phi * physical(xn)).sum()
             if vol > Vtarget:
@@ -138,14 +163,14 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         x = xd
         xPhys = physical(x)
         grey = float(((xPhys > 0.1) & (xPhys < 0.9))[des].mean()) if des.any() else 0.0
-        hist.append({"iter": it, "objective": obj, "compliance": cs.tolist(), "p": p,
+        hist.append({"iter": it, "objective": obj, "compliance": cs.tolist(), "p": p, "beta": beta[0],
                      "volumeFraction": float((phi * xPhys).sum() / Vtot), "change": change,
                      "grey": grey, "cgIters": fem.cg_iters[-len(cases):], "amgRebuilt": bool(rebuild),
                      "seconds": time.time() - t0})
-        log(f"  it {it:3d}  p {p:.2f}  obj {obj:.4g}  vol {hist[-1]['volumeFraction']:.3f}  "
+        log(f"  it {it:3d}  p {p:.2f}  b {beta[0]:.0f}  obj {obj:.4g}  vol {hist[-1]['volumeFraction']:.3f}  "
             f"change {change:.3f}  grey {grey:.2f}  cg {fem.cg_iters[-1]}{' amg' if rebuild else ''}  "
             f"{hist[-1]['seconds']:.1f}s")
-        if p >= p_final and it > (5 if warm else 10) and change < tol:
+        if p >= p_final and beta[0] >= BETA_MAX and it > (5 if warm else 10) and change < tol:
             log(f"  converged at iteration {it}")
             break
 

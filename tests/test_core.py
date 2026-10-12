@@ -54,7 +54,7 @@ def _spec(**over):
          "anchors": [{"name": "wall", "role": "fixed", "region": {"type": "box", "min": [-1, -1, -1], "max": [0.5, 11, 11]}},
                      {"name": "tip", "role": "load", "region": {"type": "box", "min": [39.5, -1, -1], "max": [41, 11, 11]},
                       "loads": {"down": [0, 0, -100]}}],
-         "objective": {"volumeFraction": 0.4}, "optimizer": {"iterations": 12}}
+         "objective": {"volumeFraction": 0.4}, "optimizer": {"iterations": 30}}
     s.update(over)
     return s
 
