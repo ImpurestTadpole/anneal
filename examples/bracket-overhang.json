@@ -164,5 +164,13 @@
   },
   "physics": {
     "buckling": true
+  },
+  "process": {
+    "name": "LPBF",
+    "buildDirection": [
+      1,
+      0,
+      0
+    ]
   }
 }

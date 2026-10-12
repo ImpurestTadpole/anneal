@@ -135,3 +135,15 @@ def unsupported_fraction(x3, build_axis=2, sign=1, thr=0.5, active=None):
         bad += int((lay & (sup == 0)).sum())
         tot += int(lay.sum())
     return bad / max(tot, 1)
+
+
+def design_space_check(active3, keep3=None, threshold=0.5):
+    """Share of the design space that cannot print without support, per axis direction: the
+    filter applied to a completely solid design space. If this is large, the optimizer cannot
+    connect the part along that direction, whatever it does (the design space overhangs)."""
+    out = {}
+    a = np.asarray(active3, float)
+    for name, (ax, sg) in AXES.items():
+        y = AMFilter(a.shape, ax, sg, active=a, keep=keep3).forward(a)
+        out[name] = float(((a > 0) & (y < threshold)).sum() / max((a > 0).sum(), 1))
+    return out

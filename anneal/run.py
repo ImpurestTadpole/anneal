@@ -254,6 +254,18 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
             raise RuntimeError("optimizer.overhangFilter needs a process with a build direction. Set \"process\": "
                                "\"FDM\" (or another process) in the spec.")
         ax, sg = axis_of(prob.process["buildDirection"])
+        from .amfilter import design_space_check, AXES
+        lost = design_space_check(g.to3d(prob.active.astype(float)), g.to3d(prob.frozen.astype(float)))
+        here = next(k for k, v in AXES.items() if v == (ax, sg))
+        prob.derived["overhangDesignSpaceLost"] = lost
+        if lost[here] > 0.01:
+            good = sorted((v, k) for k, v in lost.items())
+            raise RuntimeError(
+                f"With the overhang filter, {100 * lost[here]:.0f} % of the design space cannot be printed along "
+                f"{here} without support, so the optimizer cannot keep the load paths. Choose another build "
+                f"direction in the process (best: {good[0][1]} {100 * good[0][0]:.1f} % lost, {good[1][1]} "
+                f"{100 * good[1][0]:.1f} %), or turn optimizer.overhangFilter off. All directions: "
+                + ", ".join(f"{k} {100 * v:.1f} %" for k, v in lost.items()))
         am_make = lambda: AMFilter(g.shape, ax, sg, active=g.to3d(prob.active.astype(float)),
                                    keep=g.to3d(prob.frozen.astype(float)))
         prob.derived["overhangFilter"] = {"buildDirection": prob.process["buildDirection"], "angleDeg": 45}

@@ -108,3 +108,12 @@ def test_buckling_check_on_a_column(tmp_path):
     assert np.isfinite(b["corrected"]) and b["corrected"] <= b["raw"]
     chk = [c for c in rec["checks"] if c["name"].startswith("Buckling")][0]
     assert chk["ok"] == (b["corrected"] >= 2.0)
+
+
+def test_overhang_filter_refuses_a_design_space_that_overhangs(tmp_path):
+    """The upper half of the beam hangs over empty space when built along +Z: the filter would
+    cut the load path, so the run stops and names a direction that works."""
+    spec = _beam(optimizer={"iterations": 5, "overhangFilter": True},
+                 keepOut=[{"type": "box", "min": [5, -1, -1], "max": [41, 11, 5]}])
+    with pytest.raises(RuntimeError, match=r"along \+z without support.*best: "):
+        _run(tmp_path, spec, "overhang-space")
