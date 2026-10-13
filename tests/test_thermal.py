@@ -196,3 +196,101 @@ def test_material_without_alpha_stops_a_thermal_run():
         _prob(material=m, thermal={"cases": {"main": 60}})
     assert "Add alpha (1/K) to the material" in str(e.value)
     _prob(material=m)                                   # without a thermal case, alpha is not needed
+
+
+def test_every_built_in_material_without_alpha_stops_a_thermal_run():
+    """No built-in material has a confirmed alpha yet (H2 sources are not confirmed): each one stops."""
+    from anneal.materials import MATERIALS
+    for name, mat in MATERIALS.items():
+        if "alpha" in mat:
+            continue
+        with pytest.raises(SpecError, match="alpha"):
+            Problem(spec={**_bar_spec(), "material": name, "thermal": {"cases": {"main": 40}}}, log=lambda *a: None)
+
+
+# ------------------------------------------------------------------ H5: thermal load vector and stress
+from anneal.fem import FEM, Grid, elasticity_D, thermal_element_vector  # noqa: E402
+from anneal.physics import thermal_strain, transverse_iso_D  # noqa: E402
+
+
+@pytest.mark.parametrize("D", [elasticity_D(0.3), transverse_iso_D(1.0, 0.6, 0.3, 0.25, 0.3, (0.3, 0.2, 0.93))])
+def test_e9_bubble_thermal_load_is_zero(D):
+    m = thermal_strain(1.0, 1.4, (0.3, 0.2, 0.93))
+    fa, fb = thermal_element_vector(D, 1.7, m, "e9")
+    assert fb.shape == (9,) and np.abs(fb).max() < 1e-14 * np.abs(fa).max()
+    fa_fi, fb_fi = thermal_element_vector(D, 1.7, m, "hex8fi")
+    assert fb_fi.size == 0 and np.abs(fa - fa_fi).max() < 1e-14 * np.abs(fa).max()
+
+
+def test_thermal_element_load_is_v_b0t_d_m():
+    """For a constant strain on a cube the Gauss sum equals V B0^T D m (B is linear in each coordinate)."""
+    from anneal.fem import hex8_matrices
+    D = elasticity_D(0.3)
+    m = thermal_strain(2e-5)
+    _, B0, _ = hex8_matrices(0.3, 2.0, element="hex8fi")
+    fa, _ = thermal_element_vector(D, 2.0, m, "e9")
+    assert np.abs(fa - 8.0 * B0.T @ D @ m).max() < 1e-15
+
+
+@pytest.mark.parametrize("element", ["e9", "hex8fi"])
+def test_thermal_nodal_forces_sum_to_zero_for_any_active_set(element):
+    rng = np.random.default_rng(3)
+    g = Grid((7, 5, 4), 1.5, (0, 0, 0))
+    active = rng.random(g.nelem) > 0.4
+    fem = FEM(g, active, [], 0.3, element=element)
+    fhat = fem.thermal_vector(thermal_strain(2e-5))
+    Ee = 70000.0 * rng.uniform(0.05, 1.0, fem.act.size)
+    f = fem.thermal_load(fhat, Ee * rng.uniform(-80, 80, fem.act.size)).reshape(-1, 3)
+    scale = np.abs(f).sum()
+    assert scale > 0 and np.abs(f.sum(0)).max() < 1e-13 * scale
+    xyz = g.node_coords(np.arange(g.nnode))
+    assert np.abs(np.cross(xyz, f).sum(0)).max() < 1e-12 * scale * g.h * max(g.shape)   # no net moment
+
+
+def test_stress_with_eps0_default_is_unchanged():
+    g = Grid((3, 2, 2), 1.0, (0, 0, 0))
+    fem = FEM(g, np.ones(g.nelem, bool), [], 0.3)
+    u = np.random.default_rng(0).normal(size=3 * g.nnode)
+    a = fem.stress(u, 1000.0)
+    assert np.array_equal(a, fem.stress(u, 1000.0, None))
+    m = thermal_strain(1e-3)
+    assert np.allclose(fem.stress(u, 1000.0, m), a - 1000.0 * (fem.D @ m))
+
+
+def test_thermal_strain_rotates_with_the_build_direction():
+    assert np.array_equal(thermal_strain(2e-5), [2e-5, 2e-5, 2e-5, 0, 0, 0])
+    assert np.allclose(thermal_strain(2e-5, 5e-5, (0, 0, 1)), [2e-5, 2e-5, 5e-5, 0, 0, 0], atol=1e-20)
+    assert np.allclose(thermal_strain(2e-5, 5e-5, (1, 0, 0)), [5e-5, 2e-5, 2e-5, 0, 0, 0], atol=1e-20)
+    d = np.array([1.0, 1.0, 0.0]) / np.sqrt(2)          # tilted: shear term 2 * 0.5 * (5e-5 - 2e-5)
+    assert np.allclose(thermal_strain(2e-5, 5e-5, d), [3.5e-5, 3.5e-5, 2e-5, 3e-5, 0, 0], atol=1e-20)
+
+
+def _trun(tmp_path, name="t", **over):
+    from anneal.run import run
+    p = tmp_path / f"{name}.json"
+    p.write_text(json.dumps(_bar_spec(**over)))
+    rec, _ = run(str(p), str(tmp_path / name), log=lambda *a: None, db_path=False)
+    return rec
+
+
+def test_thermal_run_end_to_end(tmp_path):
+    rec = _trun(tmp_path, thermal={"cases": {"main": 70, "cold": -20}},
+                limits={"maxDisplacementMM": 5.0, "minSafetyFactor": 1.0})
+    o = rec["results"]["optimized"]
+    hot, cold = o["cases"]["main"], o["cases"]["cold"]
+    assert hot["deltaTC"] == 50 and cold["deltaTC"] == -40 and cold["thermalOnly"] and not hot["thermalOnly"]
+    assert cold["maxDisplacementMechanicalMM"] == 0 and cold["complianceNmm"] == 0
+    assert cold["maxDisplacementMM"] == 0                       # the limit checks the mechanical part
+    assert cold["maxDisplacementThermalMM"] > 0 and cold["thermalStressShare"] == 1.0
+    assert hot["maxDisplacementMM"] == hot["maxDisplacementMechanicalMM"] > 0
+    assert o["maxDisplacementThermalMM"] == max(hot["maxDisplacementThermalMM"], cold["maxDisplacementThermalMM"])
+    assert o["thermal"]["referenceTempC"] == 20 and o["thermal"]["displacementLimitUses"] == "mechanical"
+
+
+def test_mechanical_part_of_a_thermal_case_equals_the_case_without_temperature(tmp_path):
+    """Linear superposition: the extra right-hand side (mechanical load alone) gives the run at 20 °C."""
+    a = _trun(tmp_path, "a")["results"]["optimized"]["cases"]["main"]
+    b = _trun(tmp_path, "b", thermal={"cases": {"main": 70}})["results"]["optimized"]["cases"]["main"]
+    assert b["maxDisplacementMechanicalMM"] == pytest.approx(a["maxDisplacementMM"], rel=1e-6)
+    assert b["complianceNmm"] == pytest.approx(a["complianceNmm"], rel=1e-6)
+    assert b["peakStressMechanicalMPa"] == pytest.approx(a["peakStressMPa"], rel=1e-6)

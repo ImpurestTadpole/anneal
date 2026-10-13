@@ -128,6 +128,31 @@ def _hex8_full(nu, h=1.0, D=None):
     return ke, B0, D
 
 
+def thermal_element_vector(D, h, m, element="hex8fi"):
+    """Element load of a thermal strain (eigenstrain) m, for E = 1 and a 1 K rise, constant in the voxel:
+    f_a = sum_gp Ba^T D m w (24 values, 2x2x2 Gauss points, the same loop as the stiffness).
+    For e9 also the bubble part f_b = sum_gp Bi^T D m w (9 values). The bubble gradients (-2 xi_k / jac)
+    are odd in each coordinate, so f_b = 0 for a constant strain and the condensed load f_a - Kab Kbb^-1 f_b
+    is just f_a (tests/test_thermal.py checks f_b = 0). If the strain is ever made to vary inside a voxel,
+    f_b is no longer zero and the condensation term must be added.
+    m: thermal strain per kelvin in Voigt order xx yy zz xy yz zx (engineering shear)."""
+    D = np.asarray(D, float)
+    m = np.asarray(m, float)
+    g = 1 / np.sqrt(3)
+    jac = h / 2
+    fa, fb = np.zeros(24), np.zeros(9)
+    for xi in (-g, g):
+        for eta in (-g, g):
+            for zeta in (-g, g):
+                w = jac ** 3
+                fa += _B(_dN(xi, eta, zeta) / jac).T @ D @ m * w
+                if element == "e9":
+                    Gp = np.zeros((8, 3))
+                    Gp[:3] = np.diag([-2 * xi, -2 * eta, -2 * zeta]) / jac
+                    fb += _B(Gp)[:, :9].T @ D @ m * w
+    return fa, (fb if element == "e9" else np.zeros(0))
+
+
 class Grid:
     """Regular voxel grid. Element (i,j,k) spans origin + h*[i,i+1] x ..."""
 
@@ -298,11 +323,37 @@ class FEM:
         ue = u_full[self.edof]
         return np.einsum("ij,ij->i", ue @ self.ke, ue)
 
-    def stress(self, u_full, E_material):
-        """Element-centre stress (MPa), Voigt order xx yy zz xy yz zx, shape (n, 6)."""
+    def stress(self, u_full, E_material, eps0=None):
+        """Element-centre stress (MPa), Voigt order xx yy zz xy yz zx, shape (n, 6).
+        eps0 (optional): eigenstrain (thermal strain), shape (6,) or (n, 6): sigma = E D (B0 u - eps0).
+        None (the default) gives exactly the numbers of the earlier versions."""
         ue = u_full[self.edof]
         eps = ue @ self.B0.T
+        if eps0 is not None:
+            eps = eps - np.asarray(eps0, float)
         return (eps @ self.D.T) * (np.asarray(E_material)[:, None] if np.ndim(E_material) else E_material)
+
+    def thermal_vector(self, m):
+        """24-vector f_hat = sum_gp B^T D m w for E = 1 and a 1 K rise (see thermal_element_vector)."""
+        return thermal_element_vector(self.D, self.grid.h, m, self.element)[0]
+
+    def thermal_load(self, fhat, EdT):
+        """Global nodal load (N) of a thermal strain: element e adds EdT[e] * fhat to its 24 dofs.
+        EdT: per active element, the modulus scale (E x fill x derating) times the temperature change.
+        The load of each element sums to zero (a free voxel expands without net force)."""
+        w = np.broadcast_to(np.asarray(EdT, float), (self.act.size,))
+        fe = w[:, None] * np.asarray(fhat, float)[None, :]
+        return np.bincount(self.edof.ravel(), weights=fe.ravel(), minlength=3 * self.grid.nnode)
+
+    def element_energy_thermal(self, u_full, fhat, m, dT):
+        """Twice the strain energy per active element for E = 1 with a thermal strain dT * m:
+        integral of (B u - eps0)^T D (B u - eps0) = u^T ke u - 2 dT u^T f_hat + dT^2 V m^T D m.
+        For e9 the condensed ke gives the energy with the bubbles at equilibrium (their load is zero)."""
+        ue = u_full[self.edof]
+        m = np.asarray(m, float)
+        dT = np.asarray(dT, float)
+        return (np.einsum("ij,ij->i", ue @ self.ke, ue) - 2 * dT * (ue @ fhat)
+                + dT ** 2 * self.grid.h ** 3 * float(m @ self.D @ m))
 
     @staticmethod
     def normal_stress(sig, d):
@@ -312,9 +363,9 @@ class FEM:
         return (sig[:, 0] * x * x + sig[:, 1] * y * y + sig[:, 2] * z * z
                 + 2 * (sig[:, 3] * x * y + sig[:, 4] * y * z + sig[:, 5] * z * x))
 
-    def von_mises(self, u_full, E_material):
-        """Element-centre von Mises stress in the material (MPa)."""
-        sig = self.stress(u_full, E_material)
+    def von_mises(self, u_full, E_material, eps0=None):
+        """Element-centre von Mises stress in the material (MPa). eps0: as in stress()."""
+        sig = self.stress(u_full, E_material, eps0)
         sx, sy, sz, txy, tyz, tzx = sig.T
         return np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2)
                        + 3 * (txy ** 2 + tyz ** 2 + tzx ** 2))

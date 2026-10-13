@@ -46,6 +46,61 @@ def _sha(path):
     return h.hexdigest()
 
 
+def _derating(prob, temp_c):
+    """(E factor, yield factor) of the material at temp_c."""
+    return 1.0, 1.0
+
+
+def _thermal_setup(prob, fem, Ee):
+    """Per thermal case: temperature, temperature change, derating, thermal strain and its nodal load.
+    Ee: modulus scale per active element (E x fill) at the listed E."""
+    from .physics import thermal_strain
+    mat = prob.material
+    aniso = getattr(prob, "D", None) is not None
+    bdir = (getattr(prob, "process", None) or {}).get("buildDirection") if aniso else None
+    m = thermal_strain(mat["alpha"], mat.get("alphaZ") if aniso else None, bdir)
+    fhat = fem.thermal_vector(m)
+    out = {}
+    for c, t in prob.t_case.items():
+        dT = t - prob.t_ref
+        fE, fY = _derating(prob, t)
+        out[c] = {"tempC": t, "dT": dT, "fE": fE, "fY": fY, "m": m, "fhat": fhat, "eps0": dT * m,
+                  "E": mat["E"] * fE, "yield": mat["yield"] * fY,
+                  "f_th": fem.thermal_load(fhat, Ee * (fE * dT))}
+    return out
+
+
+def _thermal_solve(prob, fem, K, Ee, F, th):
+    """Solve every load case on one factorisation. A case at temperature has the stiffness fE K (derating
+    scales every element alike), so u = K^-1 (F_mech + f_th) / fE with the same preconditioner. A case with
+    a mechanical load gets one more right-hand side, the mechanical load alone, for the displacement limit.
+    The extra right-hand sides go first, so the last len(cases) CG counts belong to the cases (fea.study)."""
+    extra, extra_c, main = [], [], []
+    for c in prob.cases:
+        tc = th.get(c)
+        if tc is None:
+            main.append(fem.reduce_load(F[c]))
+            continue
+        main.append(fem.reduce_load(F[c] + tc["f_th"]) / tc["fE"])
+        fm = fem.reduce_load(F[c])
+        if np.any(fm):
+            extra.append(fm / tc["fE"])
+            extra_c.append(c)
+    U = fem.solve(K, extra + main, rtol=1e-9)
+    for c, tc in th.items():
+        tc["u_mech"] = np.zeros(fem.nfree)
+        tc["K"] = K if tc["fE"] == 1.0 else K * tc["fE"]
+        tc["Ee"] = Ee * tc["fE"]
+    for c, u in zip(extra_c, U[:len(extra)]):
+        th[c]["u_mech"] = u
+    return U[len(extra):]
+
+
+def _vm6(sig):
+    sx, sy, sz, txy, tyz, tzx = sig.T
+    return np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2) + 3 * (txy ** 2 + tyz ** 2 + tzx ** 2))
+
+
 def evaluate(prob, fill, label, log):
     """Solve a geometry (fill fractions, penalty 1) for every load case and measure it."""
     g = prob.grid
@@ -66,8 +121,12 @@ def evaluate(prob, fill, label, log):
     fem = FEM(g, active, fixed, prob.material["nu"], log=log, D=D, element=prob.element)
     E0 = prob.material["E"]
     K = fem.assemble(E0 * fill[fem.act])
+    th = _thermal_setup(prob, fem, E0 * fill[fem.act]) if getattr(prob, "t_case", None) else None
     t_solve = time.time()
-    Us = fem.solve(K, [fem.reduce_load(F[c]) for c in prob.cases], rtol=1e-9)
+    if th is None:
+        Us = fem.solve(K, [fem.reduce_load(F[c]) for c in prob.cases], rtol=1e-9)
+    else:
+        Us = _thermal_solve(prob, fem, K, E0 * fill[fem.act], F, th)
     t_solve = time.time() - t_solve
     anchor_nodes = prob.load_nodes(active)
     near = np.zeros(fem.act.size, bool)
@@ -81,12 +140,20 @@ def evaluate(prob, fill, label, log):
     proc = getattr(prob, "process", None)
     bdir = (proc or {}).get("buildDirection")
     u_fields, vm_fields, se_fields = {}, {}, {}
+    sf_case, sfl_case = [], []            # thermal runs: safety factors per case (derated yield)
     for c, u_r in zip(prob.cases, Us):
         u = fem.expand(u_r)
         mag = np.linalg.norm(u.reshape(-1, 3), axis=1)
-        vm = fem.von_mises(u, E0)
+        tc = th.get(c) if th else None
+        if tc is None:
+            vm = fem.von_mises(u, E0)
+        else:
+            vm = fem.von_mises(u, tc["E"], tc["eps0"])
         se_full = np.zeros(g.nelem)
-        se_full[fem.act] = 0.5 * E0 * fill[fem.act] * fem.element_energy(u)
+        if tc is None:
+            se_full[fem.act] = 0.5 * E0 * fill[fem.act] * fem.element_energy(u)
+        else:
+            se_full[fem.act] = 0.5 * tc["E"] * fill[fem.act] * fem.element_energy_thermal(u, tc["fhat"], tc["m"], tc["dT"])
         se_fields[c] = se_full
         u_fields[c] = u.reshape(-1, 3).astype(np.float32)
         vm_full = np.zeros(g.nelem, np.float32)
@@ -94,29 +161,74 @@ def evaluate(prob, fill, label, log):
         vm_fields[c] = vm_full
         keep = solid & ~near if (solid & ~near).any() else np.ones(vm.size, bool)
         peak = float(np.percentile(vm[keep], 99.5))
+        Yc = prob.material["yield"] if tc is None else tc["yield"]
         if bdir is not None:   # tension across the layers (FDM parts split between layers)
-            sz = np.maximum(FEM.normal_stress(fem.stress(u, E0), bdir), 0.0)
+            if tc is None:
+                sz = np.maximum(FEM.normal_stress(fem.stress(u, E0), bdir), 0.0)
+            else:
+                sz = np.maximum(FEM.normal_stress(fem.stress(u, tc["E"], tc["eps0"]), bdir), 0.0)
             worst_sz = max(worst_sz, float(np.percentile(sz[keep], 99.5)))
+            psz = float(np.percentile(sz[keep], 99.5))
+            sfl_case.append(Yc * float(proc.get("zStrengthFactor", 1.0)) / psz if psz > 0 else float("inf"))
         if D is not None:      # print-aware run: Hill criterion with in-plane and interlayer strength
             from .physics import hill_index
             Y = prob.material["yield"]
-            hi = hill_index(fem.stress(u, E0), Y, Y * float(proc.get("zStrengthFactor", 1.0)), bdir)
+            if tc is None:
+                hi = hill_index(fem.stress(u, E0), Y, Y * float(proc.get("zStrengthFactor", 1.0)), bdir)
+            else:
+                hi = hill_index(fem.stress(u, tc["E"], tc["eps0"]), Yc, Yc * float(proc.get("zStrengthFactor", 1.0)), bdir)
             worst_hill = max(worst_hill, float(np.percentile(hi[keep], 99.5)))
-        load_disp = {a.name: float(mag[anchor_nodes[a.name]].mean())
+        sf_case.append(Yc / peak if peak > 0 else float("inf"))
+        mag_l = mag                       # the displacement the limit checks
+        if tc is not None:
+            um = fem.expand(tc["u_mech"])
+            mag_m = np.linalg.norm(um.reshape(-1, 3), axis=1)
+            mag_t = np.linalg.norm((u - um).reshape(-1, 3), axis=1)
+            mag_l = mag if prob.disp_incl_thermal else mag_m
+        load_disp = {a.name: float(mag_l[anchor_nodes[a.name]].mean())
                      for a in prob.anchors if a.role == "load" and c in a.loads}
-        res["cases"][c] = {"complianceNmm": float(fem.reduce_load(F[c]) @ u_r),
-                           "maxDisplacementMM": float(mag.max()),
+        res["cases"][c] = {"complianceNmm": float(fem.reduce_load(F[c]) @ (u_r if tc is None else tc["u_mech"])),
+                           "maxDisplacementMM": float(mag_l.max()),
                            "loadPointDisplacementMM": load_disp,
                            "peakStressMPa": peak, "maxStressAtAnchorsMPa": float(vm.max())}
-        worst_disp = max(worst_disp, float(mag.max()))
+        if tc is not None:
+            sig_m = fem.stress(um, tc["E"])
+            vm_m = _vm6(sig_m)
+            vm_t = _vm6(fem.stress(u, tc["E"], tc["eps0"]) - sig_m)
+            p_m, p_t = float(np.percentile(vm_m[keep], 99.5)), float(np.percentile(vm_t[keep], 99.5))
+            res["cases"][c].update({
+                "temperatureC": tc["tempC"], "deltaTC": tc["dT"], "thermalOnly": c in prob.thermal_only,
+                "deratingE": tc["fE"], "deratingYield": tc["fY"], "EMPa": tc["E"], "yieldMPa": tc["yield"],
+                "maxDisplacementMechanicalMM": float(mag_m.max()), "maxDisplacementThermalMM": float(mag_t.max()),
+                "maxDisplacementTotalMM": float(mag.max()),
+                "peakStressMechanicalMPa": p_m, "peakStressThermalMPa": p_t,
+                "thermalStressShare": p_t / (p_m + p_t) if p_m + p_t > 0 else 0.0,
+                "safetyFactor": sf_case[-1]})
+        worst_disp = max(worst_disp, float(mag_l.max()))
         worst_sig = max(worst_sig, peak)
     res["maxDisplacementMM"] = worst_disp
     res["peakStressMPa"] = worst_sig
     res["safetyFactor"] = prob.material["yield"] / worst_sig if worst_sig > 0 else float("inf")
+    if th:                 # each case against its own (derated) yield
+        res["safetyFactor"] = min(sf_case)
     if bdir is not None:
         zf = float(proc.get("zStrengthFactor", 1.0))
         res["peakLayerTensionMPa"] = worst_sz
         res["safetyFactorLayers"] = prob.material["yield"] * zf / worst_sz if worst_sz > 0 else float("inf")
+        if th:
+            res["safetyFactorLayers"] = min(sfl_case)
+    if th:
+        tcs = {c: res["cases"][c] for c in th}
+        res["maxDisplacementThermalMM"] = max(r["maxDisplacementThermalMM"] for r in tcs.values())
+        res["maxDisplacementMechanicalMM"] = max(
+            [r["maxDisplacementMechanicalMM"] for r in tcs.values()]
+            + [res["cases"][c]["maxDisplacementMM"] for c in prob.cases if c not in th])
+        res["thermal"] = {"referenceTempC": prob.t_ref,
+                          "displacementLimitUses": "total" if prob.disp_incl_thermal else "mechanical",
+                          "alpha": prob.material["alpha"],
+                          "strainPerK": [float(v) for v in next(iter(th.values()))["m"]],
+                          "cases": {c: {k: tcs[c][k] for k in ("temperatureC", "deltaTC", "thermalOnly", "deratingE",
+                                                               "deratingYield", "EMPa", "yieldMPa")} for c in tcs}}
     if D is not None:
         res["hillIndex"] = worst_hill
         res["safetyFactorVonMises"] = res["safetyFactor"]
@@ -125,8 +237,13 @@ def evaluate(prob, fill, label, log):
     try:
         from .fea import study
         keep = solid & ~near if (solid & ~near).any() else np.ones(fem.act.size, bool)
-        res["fea"] = study(prob, fem, K, E0 * fill[fem.act], prob.cases, F, Us, anchor_nodes, keep, label,
-                           t_solve, prob.material["yield"], E0)
+        if th is None:
+            res["fea"] = study(prob, fem, K, E0 * fill[fem.act], prob.cases, F, Us, anchor_nodes, keep, label,
+                               t_solve, prob.material["yield"], E0)
+        else:              # applied loads include the thermal nodal forces (they sum to zero)
+            Ft = {c: (F[c] + th[c]["f_th"]) if c in th else F[c] for c in F}
+            res["fea"] = study(prob, fem, K, E0 * fill[fem.act], prob.cases, Ft, Us, anchor_nodes, keep, label,
+                               t_solve, prob.material["yield"], E0, thermal=th)
     except Exception as e:   # the report is extra information: never lose a run over it
         res["fea"] = {"error": str(e)}
     res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields, "se": se_fields, "fill": fill}

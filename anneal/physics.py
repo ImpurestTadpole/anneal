@@ -96,6 +96,19 @@ def material_D(material, process):
                "buildDirection": list(map(float, process["buildDirection"]))}
 
 
+# ------------------------------------------------------------------ temperature
+def thermal_strain(alpha, alpha_z=None, build_dir=None):
+    """Thermal strain per kelvin in the global Voigt order (xx yy zz xy yz zx, engineering shear).
+    Isotropic: [a, a, a, 0, 0, 0]. With alpha_z and a build direction (print-aware runs): diag(a, a, a_z)
+    in the layer frame, rotated like D (physics.frame)."""
+    a = float(alpha)
+    if alpha_z is None or build_dir is None or float(alpha_z) == a:
+        return np.array([a, a, a, 0.0, 0.0, 0.0])
+    R = frame(build_dir)
+    M = R @ np.diag([a, a, float(alpha_z)]) @ R.T
+    return np.array([M[0, 0], M[1, 1], M[2, 2], 2 * M[0, 1], 2 * M[1, 2], 2 * M[2, 0]])
+
+
 # ------------------------------------------------------------------ strength
 def hill_index(sig, X, Z, build_dir):
     """Hill failure index sqrt(f) per element (failure at 1). sig: (n, 6) global Voigt stress."""

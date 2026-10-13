@@ -59,7 +59,10 @@ def zz_error(fem, sig, Ee, E0):
     return np.sqrt(eta2), rel, Sn
 
 
-def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, seconds, yield_mpa, E0):
+def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, seconds, yield_mpa, E0, thermal=None):
+    """thermal (optional, 0.4.2): {case: dict from run._thermal_setup/_thermal_solve}. Such a case uses its own
+    (derated) K, Ee, E and yield, the stress E D (B u - eps0), and F_full[c] holds the mechanical plus thermal
+    nodal loads. Without it the numbers are exactly those of the earlier versions."""
     g = prob.grid
     used = np.unique(g.element_nodes(fem.act))
     partial = int(((Ee / E0) < 0.999).sum())
@@ -80,7 +83,11 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
                       "seconds": float(seconds)},
            "cases": {}}
     worst_res = 0.0
+    base = (K, Ee, E0, yield_mpa)
     for c, u_r in zip(cases, U_red):
+        tc = (thermal or {}).get(c)
+        K, Ee, E0, yield_mpa = base if tc is None else (tc["K"], tc["Ee"], tc["E"], tc["yield"])
+        eps0 = None if tc is None else tc["eps0"]
         f = fem.reduce_load(F_full[c])
         r = K @ u_r - f
         res = float(np.linalg.norm(r) / max(np.linalg.norm(f), 1e-30))
@@ -98,9 +105,11 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
         U = u.reshape(-1, 3)
         mag = np.linalg.norm(U, axis=1)
         im = int(np.argmax(mag))
-        sig = fem.stress(u, Ee * 0 + E0)
+        sig = fem.stress(u, Ee * 0 + E0, eps0)
         vm = _vm(sig)
         eps = u[fem.edof] @ fem.B0.T
+        if eps0 is not None:              # elastic (mechanical) strain: total minus thermal
+            eps = eps - eps0
         em = (eps[:, 0] + eps[:, 1] + eps[:, 2]) / 3
         estrn = np.sqrt(2.0 / 3.0 * ((eps[:, 0] - em) ** 2 + (eps[:, 1] - em) ** 2 + (eps[:, 2] - em) ** 2
                                      + 0.5 * (eps[:, 3] ** 2 + eps[:, 4] ** 2 + eps[:, 5] ** 2)))
@@ -108,6 +117,8 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
         iv = int(np.argmax(vm))
         design = float(np.percentile(vm[keep], 99.5))
         energy = float(0.5 * F_full[c] @ u)
+        if tc is not None:
+            energy = float(0.5 * (Ee * fem.element_energy_thermal(u, tc["fhat"], tc["m"], tc["dT"])).sum())
         vol = Ee / E0 * g.h ** 3
         fos = yield_mpa / np.maximum(vm, 1e-12)
         # stress recovery and error estimate use the stress in the material at its local stiffness
