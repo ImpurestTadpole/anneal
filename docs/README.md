@@ -12,6 +12,7 @@
 | `research/thermal-loads.md` | planning | thermal physics, literature traps, staged plan T0–T4 |
 | `research/CONTEXT.md` | background | digest of the research behind the decisions |
 | `research/deepseek-physics-review.md` | background | external physics review (status in `PLAN.md` section 6) |
+| `GUI.md` | everyone | screenshots of the app and the logo |
 | `../VERIFICATION.md` | release | evidence for one release (made by `tools/prove_release.py`) |
 | `../README.md` | users | install, options, every spec key |
 
