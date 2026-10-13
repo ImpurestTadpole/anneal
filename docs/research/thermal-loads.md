@@ -1,6 +1,7 @@
 # Thermal loads in Anneal — research and plan
 
-Status: research, 12 October 2026. Nothing here is implemented.
+Status: research, 12 October 2026. Nothing here is implemented. Stages T0 + T1 are planned as
+release 0.4.2 (`docs/PLAN.md` section 4B).
 Base truth: `master` (0.3.0, 17a3e31) has no thermal code. Every thermal stage below builds on
 `release-0.4`. It reuses the e9 element and the design-dependent load path that 0.4 added for self-weight.
 

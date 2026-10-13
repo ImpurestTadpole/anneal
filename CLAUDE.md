@@ -99,6 +99,9 @@ GUI and docs
 0.4.1 (after v0.4.0; plan in docs/PLAN.md section 4A)
 - [ ] Torque load type: `torques` in N·m on load anchors, gate V11 torsion, twist output, GUI, CalculiX cross-check.
 
+0.4.2 (after v0.4.1; plan in docs/PLAN.md section 4B)
+- [ ] Temperature: material derating and service limit, uniform thermal strain per load case in the as-built check, gate V12–V14, CalculiX thermal cross-check, GUI, README.
+
 Later
 - [ ] Bolt preload load case (DeepSeek plan 6.3).
 - [ ] Release: merge release-0.4 → master after the proof, tag v0.4.0, build the zip.

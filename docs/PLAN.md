@@ -260,6 +260,140 @@ The same proof as 0.4.0 (`CLAUDE.md`, "Proof"), with these changes:
 
 ---
 
+## 4B. Plan for release 0.4.2 — temperature: derating and thermal stress
+
+0.4.2 adds temperature to the as-built check. It is stages T0 and T1 of
+`docs/research/thermal-loads.md` (read that file first: physics, traps and sources). 0.4.2 starts
+only after 0.4.1 is on master and tagged. Branch `release-0.4.2` from tag `v0.4.1`.
+
+### Scope
+
+In scope:
+- **Derating (T0):** material properties at temperature, and a hard stop above the material's
+  service limit.
+- **Thermal stress (T1):** one uniform temperature per load case. The thermal strain α·ΔT acts in
+  the as-built re-solve, the FEA study, the stress, Hill and layer checks, buckling, the CalculiX
+  sidecar, the report and the GUI.
+- New gate checks for thermal strain.
+- Fixes from owner feedback on 0.4.1 (bugs only).
+
+Not in scope (later stages in `thermal-loads.md`):
+- A temperature field from heat flow (T2, conduction solve).
+- Thermal load inside the optimizer (T3). In 0.4.2 the optimizer uses the mechanical loads only;
+  the thermal load enters at the as-built check. The report must say this.
+- Temperature-dependent properties inside one part (one temperature per load case only).
+- Residual stress and warping from printing.
+
+### Definitions
+
+| Term | Meaning |
+|---|---|
+| Reference temperature | The temperature at which the part has no thermal stress (assembly). Default 20 °C. |
+| Case temperature | The uniform part temperature during one load case. ΔT = case − reference. |
+| Thermal strain | ε_th = ΔT·[α, α, α_z, 0, 0, 0] in the build frame (α_z = α if not given). |
+| Derating | E and yield at the case temperature, from the material's table, by linear interpolation. |
+| Service limit | `maxServiceTempC` of the material. Above it the linear model is not valid. |
+
+### Spec (proposed)
+
+```json
+"thermal": {
+  "referenceTempC": 20,
+  "cases": { "main": 55, "coldStart": -20, "expansionOnly": 70 }
+}
+```
+
+- Each key of `thermal.cases` is a load case name, and its value is the case temperature in °C.
+- A key that is also a mechanical load case: that case runs at that temperature (mechanical +
+  thermal together).
+- A key with no mechanical loads: a new **thermal-only** load case (expansion only).
+- Mechanical load cases without a key run at the reference temperature (no thermal strain, no
+  derating) — as in 0.4.1.
+- `limits.maxDisplacementMM` checks the **mechanical** displacement by default: the as-built
+  solve without the thermal strain. A free part that expands is not "too flexible". The thermal
+  displacement is reported separately. `limits.displacementIncludesThermal: true` changes this.
+- A spec without `thermal` must give bit-identical results to 0.4.1 (regression).
+
+New material keys (library, import and custom material):
+
+| Key | Unit | Meaning |
+|---|---|---|
+| `alpha` | 1/K | expansion coefficient (in the layers for printed parts) |
+| `alphaZ` | 1/K | expansion across the layers (optional; print-aware runs) |
+| `maxServiceTempC` | °C | service limit |
+| `tempDerating` | list | `[[tempC, E factor, yield factor], ...]`, factors relative to the listed E and yield; must include the reference temperature with factors 1 |
+
+**Every built-in value needs a cited source** (datasheet or paper) in the material's `source`
+field. If no source is found, leave the key out. A thermal case on a material without `alpha` gives
+a SpecError that names the missing key and how to add it. Do not invent numbers.
+
+### How the thermal strain goes into the solver
+
+1. Per material, compute once the 24-vector f̂ = Σ_gp Bᵀ D₁ m_α w (D₁ = D for E = 1, m_α the strain
+   pattern above, rotated like D for print-aware runs). For e9 the bubble part is zero when ΔT is
+   constant in a voxel (checked numerically: |f_b| = 0). Keep a test that proves it.
+2. Thermal load of a case: f = Σ_e E_e · ΔT · f̂ scattered over the element dofs (the same
+   scatter as `internal_forces`). E_e includes the fill fraction and the derating factor.
+3. Displacement: u = K⁻¹ (f_mech + f_th). Mechanical-only displacement for the limit: K⁻¹ f_mech
+   (same factorisation/preconditioner, one more right-hand side).
+4. Stress: σ = E_e · D₁ (B₀ u − ε_th). Change `FEM.stress` to take an optional ε₀ per element and
+   update **every caller**: `run.evaluate`, `fea.study` (and ZZ), Hill, the layer check, buckling.
+5. Buckling: the thermal stress is part of the pre-stress of that case (a heated, held part can
+   buckle with no mechanical load). `buckling_check` uses the total stress.
+6. Impact stays mechanical (unit-load stiffness); it uses the derated E and yield of the case it
+   names, if any.
+7. FEA study equilibrium: a thermal-only case has zero net applied force. Normalise the equilibrium
+   error by Σ|f_i| (sum of absolute nodal forces), not by |Σ f_i|, for all cases.
+
+### Work items
+
+| ID | Work | Owner (section 3) | Acceptance |
+|---|---|---|---|
+| H1 | Material keys `alpha`, `alphaZ`, `maxServiceTempC`, `tempDerating`: schema, validation, CSV/JSON import (column names and units: 1/K, ppm/K, µm/(m·K), °C, °F), library editor fields. | solver-verifier (`materials.py`); gui-docs (library page) | Import tests for each unit; a bad derating table (missing reference row, factor ≤ 0, unsorted) gives a row-level error. |
+| H2 | Sourced values for the built-in materials (PLA-FDM, PETG-FDM, PA12-SLS, AlSi10Mg-LPBF, Ti64-LPBF, 316L-LPBF). Web research; the source goes in the material's `source` text. | solver-verifier | Each value added has a source that a person can open. Missing values stay missing. |
+| H3 | Parse `thermal` in `Problem`: reference, case temperatures, thermal-only cases added to `self.cases`; `limits.displacementIncludesThermal`. SpecErrors: unknown material key, case above `maxServiceTempC` (stop the run, name the limit and the fix). | solver-verifier (`problem.py`) | Tests for each error message; a thermal-only case appears in `prob.cases`. |
+| H4 | Derating: E and yield per case from the table; used by the as-built check, safety factors, Hill, layer check, impact. | solver-verifier (`run.py`, `physics.py`) | Test: a table with factor 0.5 at the case temperature halves E (displacement doubles) and yield. |
+| H5 | Thermal load vector and stress with ε₀ (steps 1–4 above) in `fem.py`; mechanical-only displacement as an extra right-hand side. | solver-verifier (`fem.py`, `run.py`) | Unit tests: e9 bubble thermal load = 0; Σ of thermal nodal forces = 0 for any active set. |
+| H6 | Gate checks (numbers after V11 torsion): **V12** free bar, uniform ΔT: end displacement α·ΔT·L to 1e-10 relative and stress < 1e-9·E·α·ΔT, for e9 and hex8fi; **V13** bar on rollers at both ends (x held only), ΔT: σ_x = −E·α·ΔT exactly, σ_y = σ_z = 0; **V14** free beam with a linear ΔT through the depth (per-voxel ΔT through the internal API): curvature κ = α·(ΔT_top − ΔT_bottom)/h; set the tolerance from measured data at 4, 8, 16 layers (midpoint sampling error is O(1/n²)). | solver-verifier (`validate.py`, `provenance.py`) | `python -m anneal validate` → "GATE: OPEN - 14 of 14". Gate result stored again for the new solver hash. |
+| H7 | Buckling with thermal pre-stress (step 5). | solver-verifier (`run.py`, `physics.py`) | Test: a column held at both ends, heated: buckling temperature ΔT_cr = π²·I/(α·A·L_eff²) with L_eff = 0.5·L, within the V7 tolerance. |
+| H8 | FEA study and report: case temperature and ΔT per case; thermal displacement and mechanical displacement as separate rows; reactions from thermal load; equilibrium normalised by Σ|f| (step 7); "Assumptions": uniform temperature, linear thermal strain, derated values at the case temperature, optimizer used mechanical loads only; "Not modelled": temperature gradients, heat flow, creep, slip in bolted joints (held supports overestimate thermal stress). | solver-verifier (`fea.py`, `report.py`) | Report on the example shows all items. |
+| H9 | Check rows: "Service temperature vs material limit" (per case); "Thermal stress share" (thermal part of the peak stress); warning when supports hold all three directions on two or more anchors and ΔT ≠ 0 ("held supports overestimate thermal stress; hold only the bolt-axis direction if the joint can slide"). | solver-verifier (`run.py`) | Rows appear on the example; the warning appears on a doubly clamped bar. |
+| H10 | CalculiX sidecar: `*EXPANSION` in the material cards, `*INITIAL CONDITIONS, TYPE=TEMPERATURE` (reference) and `*TEMPERATURE` (case) in the step; engineering-constant orientation for `alphaZ`. Cross-check on a clamped bracket. | solver-verifier (`sidecar.py`, `tools/ccx_bracket.py`) | e9 thermal displacement and peak stress within 5 % of CalculiX tet10 (stress away from supports). |
+| H11 | Advanced output: thermal vs mechanical stress share per case; a statement naming the hottest case and its margin to the service limit; material comparison uses the derated values. | solver-verifier (`advanced.py`) | Statements appear on the example. |
+| H12 | GUI: "Temperature" fieldset in step 3 (reference temperature; a temperature per load case; "add a thermal-only case"); material `alpha`/`alphaZ`/`maxServiceTempC` fields for custom materials; Result step shows thermal and mechanical displacement separately. Old projects open unchanged. | gui-docs (`app.js`) | `tools/gui_smoke.py`: set case temperatures, save, reload, run; the spec holds `thermal`. |
+| H13 | Example `examples/thermal-bracket.json` (metal bracket bolted at two anchors, a mechanical case at 60 °C and a thermal-only cold case) and a golden test (e9 and hex8fi). | solver-verifier | Golden test passes. |
+| H14 | README (temperature option, units, what is and is not modelled, the displacement rule) and CHANGELOG 0.4.2. | gui-docs | Every new spec key and material key is in the README. |
+| H15 | Owner feedback fixes on 0.4.1 (bugs only). | by area | Each fix has a test. |
+
+### Order
+
+1. H1, H3, H5 with their tests → H6 (the gate must pass before anything else uses the thermal load).
+2. H2 (research) in parallel with step 1.
+3. H4, H7, H8, H9, H10, H11 in parallel.
+4. H12 after H3 (the spec shape is fixed).
+5. H13, H14, then the proof.
+
+### Proof for 0.4.2
+
+The same proof as 0.4.0 (`CLAUDE.md`, "Proof"), with these changes:
+- The gate is 14 of 14.
+- Regression: `examples/bracket.json` and `examples/torque-hub.json` (no `thermal`) give
+  bit-identical results to **0.4.1** with e9 and hex8fi.
+- New runs: `examples/thermal-bracket.json` and the CalculiX thermal cross-check (H10).
+- Merge to master, tag `v0.4.2`.
+
+### Risks
+
+| Risk | What answers it |
+|---|---|
+| No sourced CTE or derating data for a printed polymer | H2 leaves the value out; the run stops with a message that tells the owner to add a measured or datasheet value. |
+| Held supports make thermal stress far too high | H9 warning; the README explains the `dofs` setting for sliding joints. |
+| The optimizer ignores the thermal load, so the part can fail the thermal check | The check row fails with the fix "raise volumeFraction or make the joint able to slide"; T3 (later) adds the load to the optimizer. |
+| Polymer above its glass transition | H3 stops the run above `maxServiceTempC`. |
+| Thermal displacement hides a too-flexible part, or the reverse | The limit uses the mechanical displacement by default; both are reported. |
+
+---
+
 ## 5. After 0.4.0 — the road to the goal
 
 Ordered by value to the goal. Each item lists why it matters.
