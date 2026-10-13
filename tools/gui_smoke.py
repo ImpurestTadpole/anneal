@@ -35,7 +35,14 @@ def open_in_page(pg, pid, step=None):
     pg.wait_for_selector(".stepHead", timeout=20000)
     pg.wait_for_timeout(1200)                        # openProject saves at once
     if step is not None and pg.locator(f'.stepHead[data-step="{step}"][aria-expanded="true"]').count() == 0:
-        pg.locator(f'.stepHead[data-step="{step}"]').click()
+        for attempt in range(3):                      # a loaded machine can stall one click; retry it
+            try:
+                pg.locator(f'.stepHead[data-step="{step}"]').click(timeout=15000)
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                pg.wait_for_timeout(1000)
         pg.wait_for_timeout(300)
 
 
