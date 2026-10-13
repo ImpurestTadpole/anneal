@@ -297,6 +297,53 @@ def test_mechanical_part_of_a_thermal_case_equals_the_case_without_temperature(t
     assert b["peakStressMechanicalMPa"] == pytest.approx(a["peakStressMPa"], rel=1e-6)
 
 
+# ------------------------------------------------------------------ H8, H9, H11: study, report, check rows, statements
+@pytest.fixture(scope="module")
+def hot_run(tmp_path_factory):
+    """One run for the output tests: a hot mechanical case and a cold thermal-only case, report and advanced
+    output on, two fixed anchors held in x, y and z (the held-supports warning must appear)."""
+    import os
+    os.environ["ANNEAL_HOME"] = str(tmp_path_factory.mktemp("home"))
+    from anneal.run import run
+    d = tmp_path_factory.mktemp("hot")
+    s = _bar_spec(thermal={"cases": {"main": 70, "cold": -20}},
+                  limits={"maxDisplacementMM": 5.0, "minSafetyFactor": 1.0},
+                  output={"report": True, "advanced": True, "formats": ["stl"]})
+    s["anchors"].insert(1, {"name": "wall-2", "role": "fixed",
+                            "region": {"type": "box", "min": [19.1, -1, -1], "max": [20.9, 11, 0.9]}})
+    p = d / "hot.json"
+    p.write_text(json.dumps(s))
+    rec, html = run(str(p), str(d / "out"), log=lambda *a: None, db_path=False)
+    return rec, open(html, encoding="utf-8").read()
+
+
+def test_fea_study_reports_temperature_and_thermal_reactions(hot_run):
+    rec, _ = hot_run
+    f = rec["results"]["optimized"]["fea"]["cases"]
+    hot, cold = f["main"], f["cold"]
+    assert hot["temperatureC"] == 70 and hot["deltaTC"] == 50 and cold["deltaTC"] == -40
+    assert hot["deratingE"] == pytest.approx(0.75) and hot["EMPa"] == pytest.approx(52500)
+    assert hot["uresThermalMaxMM"] > 0 and cold["uresMechanicalMaxMM"] == 0
+    # the thermal load has no net force: its support reactions cancel (to the solver tolerance)
+    R = np.sum([v for v in hot["reactionsThermalN"].values()], axis=0)
+    assert np.abs(R).max() < 1e-6 * hot["thermalNodalForceAbsSumN"]
+    # mechanical + thermal case: equilibrium against the applied mechanical load
+    assert hot["equilibriumError"] < 1e-6
+
+
+def test_report_shows_temperature_assumptions_and_limits(hot_run):
+    rec, html = hot_run
+    for words in ("<h2>Temperature</h2>", "Mechanical displacement, mm", "Thermal displacement, mm",
+                  "used the mechanical loads only", "one uniform temperature per load case",
+                  "E and yield derated at the case temperature", "creep and stress relaxation",
+                  "temperature gradients and heat flow", "slip in bolted joints", "from the thermal load"):
+        assert words in html, words
+    assert "<li>temperature and thermal stress</li>" not in html
+    from anneal.fea import report_lines
+    text = "\n".join(report_lines(rec["results"]["optimized"]["fea"]))
+    assert "temperature 70 °C" in text and "from the thermal load" in text
+
+
 # ------------------------------------------------------------------ H7: buckling with thermal pre-stress
 @pytest.mark.parametrize("element", ["e9", "hex8fi"])
 def test_heated_column_held_at_both_ends_buckles_at_the_euler_temperature(element):

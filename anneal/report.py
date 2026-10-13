@@ -111,6 +111,9 @@ def _fea_section(built):
     rows = []
     for c, r in fea["cases"].items():
         reac = "<br>".join(f"{H.escape(a)}: {_v3(R)} N" for a, R in r["reactionsN"].items())
+        if "reactionsThermalN" in r:
+            reac += "<br><span class='note'>from the thermal load: " + "; ".join(
+                f"{H.escape(a)} {_v3(R)} N" for a, R in r["reactionsThermalN"].items()) + "</span>"
         sh = r["volumeShareBelowFOS"]
         zz = f"{100 * r['zzRelativeError']:.1f} %" if "zzRelativeError" in r else "–"
         rows.append(f"<tr><td>{H.escape(c)}</td><td>{_v3(r['appliedN'])} N</td><td>{reac}<br><span class='note'>"
@@ -132,6 +135,37 @@ def _fea_section(built):
             f"displacement. Stress error: Zienkiewicz-Zhu estimate in the energy norm; it halves when the voxel size halves.</p>")
 
 
+def _thermal_section(prob, built):
+    """Temperature per load case: derating, mechanical and thermal displacement, stress shares (0.4.2)."""
+    th = built.get("thermal")
+    if not th:
+        return ""
+    rows = []
+    for c in prob.cases:
+        r = built["cases"][c]
+        if "temperatureC" not in r:
+            rows.append(f"<tr><td>{H.escape(c)}</td><td>{th['referenceTempC']:g} °C (reference)</td><td>0</td><td>1 / 1</td>"
+                        f"<td>{_f(r['maxDisplacementMM'])}</td><td>0</td><td>{_f(r['peakStressMPa'])}</td><td>0 %</td></tr>")
+            continue
+        rows.append(f"<tr><td>{H.escape(c)}{' (thermal only)' if r['thermalOnly'] else ''}</td><td>{r['temperatureC']:g} °C</td>"
+                    f"<td>{r['deltaTC']:+g} K</td><td>{r['deratingE']:.3g} / {r['deratingYield']:.3g}<br><span class='note'>"
+                    f"E {r['EMPa']:.4g}, yield {r['yieldMPa']:.4g} MPa</span></td>"
+                    f"<td>{_f(r['mechanicalDisplacementMM'])}</td><td>{_f(r['thermalDisplacementMM'])}<br><span class='note'>"
+                    f"total {_f(r['totalDisplacementMM'])}</span></td>"
+                    f"<td>{_f(r['peakStressMPa'])}<br><span class='note'>mechanical {_f(r['peakStressMechanicalMPa'])}, "
+                    f"thermal {_f(r['peakStressThermalMPa'])}</span></td><td>{100 * r['thermalStressShare']:.0f} %</td></tr>")
+    lim = ("the mechanical displacement (the thermal expansion of a free part is not a lack of stiffness)"
+           if th["displacementLimitUses"] == "mechanical" else "the total displacement (limits.displacementIncludesThermal)")
+    return (f"<h2>Temperature</h2><p class='note'>Reference (stress-free) temperature {th['referenceTempC']:g} °C; "
+            f"expansion coefficient {th['alpha']:.4g} 1/K. The displacement limit checks {lim}.</p>"
+            f"<div class='scroll'><table><tr><th>Load case</th><th>Temperature</th><th>ΔT</th><th>Derating E / yield</th>"
+            f"<th>Mechanical displacement, mm</th><th>Thermal displacement, mm</th><th>Peak stress, MPa</th>"
+            f"<th>Thermal stress share</th></tr>{''.join(rows)}</table></div>"
+            f"<p class='note'>Mechanical: the loads alone at the case temperature. Thermal: the expansion alone. Peak stress "
+            f"(total) is the 99.5th percentile of mechanical plus thermal stress; the share is thermal / (mechanical + "
+            f"thermal) of those percentiles. The optimizer used the mechanical loads only.</p>")
+
+
 def _advanced_section(out_dir, adv):
     if not adv:
         return ""
@@ -146,7 +180,8 @@ def _advanced_section(out_dir, adv):
             imgs.append(f"<h3 style='font-size:14px;margin:18px 0 6px'>{t}</h3><img class='plot' "
                         f"src='data:image/png;base64,{b}' alt='{t}'>")
     li = "".join(f"<li>{H.escape(t)}</li>" for t in adv["insights"])
-    mats = "".join(f"<tr><td>{H.escape(r['name'])}{' (this run)' if r['current'] else ''}</td><td>{r['massG']:.4g}</td>"
+    mats = "".join(f"<tr><td>{H.escape(r['name'])}{' (this run)' if r['current'] else ''}"
+                   f"{(' — ' + H.escape(r['note'])) if r.get('note') else ''}</td><td>{r['massG']:.4g}</td>"
                    f"<td>{r['displacementMM']:.4g}</td><td>{r['safetyFactor']:.3g}</td></tr>" for r in adv.get("materials", []))
     return (f"<h2>How the part works</h2><ul>{li}</ul>{''.join(imgs)}"
             + (f"<div class='scroll'><table><tr><th>Material</th><th>Mass, g</th><th>Max displacement, mm</th>"
@@ -173,6 +208,25 @@ def _assumptions(prob, built, record):
         nm.append("layer anisotropy (turn on physics.anisotropic for FDM)")
     if "nonlinear" not in built:
         nm.append("large deformation (physics.nonlinear runs CalculiX)")
+    th = built.get("thermal")
+    if th:                 # 0.4.2: what the temperature option assumes and leaves out
+        table = bool(prob.material.get("tempDerating"))
+        ass += [("Temperature", f"one uniform temperature per load case; thermal strain α·ΔT, linear, from the "
+                                f"reference {th['referenceTempC']:g} °C" + (" (α across the layers from alphaZ)"
+                                                                          if prob.material.get("alphaZ") and aniso else "")),
+                ("Material at temperature", "E and yield derated at the case temperature (tempDerating, linear "
+                                            "interpolation)" if table else "no tempDerating table: the listed (room-"
+                                            "temperature) E and yield are used at every case temperature"),
+                ("Optimizer", "used the mechanical loads only; the thermal load enters at the as-built check"),
+                ("Displacement limit", "mechanical displacement; thermal expansion reported separately"
+                 if th["displacementLimitUses"] == "mechanical" else "total displacement (mechanical plus thermal)"),
+                ("Strain (ESTRN)", "elastic strain: total strain minus thermal strain")]
+        nm = [t for t in nm if t != "temperature and thermal stress"]
+        nm += ["temperature gradients and heat flow (one uniform temperature per load case)",
+               "creep and stress relaxation at temperature (a service limit such as HDT is a short-term value)",
+               "slip in bolted joints: supports held in all directions overestimate the thermal stress",
+               "expansion of the frame the part is fixed to (use the difference of expansion; docs/guides/NEW-PART.md "
+               "section 9)", "properties that change with temperature inside one part"]
     sol = record.get("solver") or {}
     val = sol.get("validation") or {}
     gate = ("passed the validation gate on " + str(val.get("createdUTC")) if val.get("passed") else
@@ -183,6 +237,9 @@ def _assumptions(prob, built, record):
            "Results come from re-solving the exported surface, not the optimizer's density field."]
     if eqs and all(e is not None for e in eqs):
         ver.append(f"Equilibrium: reactions balance the applied loads to {max(eqs):.1e} (relative).")
+    if th and getattr(prob, "thermal_only", None):
+        ver.append("Thermal-only cases have no net applied force; their equilibrium error is relative to the sum of "
+                   "the absolute nodal forces.")
     tr = "".join(f"<tr><td>{H.escape(a)}</td><td>{H.escape(b)}</td></tr>" for a, b in ass)
     return (f"<h2>Assumptions</h2><div class='scroll'><table>{tr}</table></div>"
             f"<h2>Not modelled</h2><ul>{''.join(f'<li>{H.escape(t)}</li>' for t in nm)}</ul>"
@@ -238,7 +295,7 @@ def write(out_dir, prob, res, mesh, built, original, chk, thick, record):
     verdict = ("All checks pass." if all_ok else "Some checks fail — see the fixes below before you print.") if chk else \
         "No limits were given, so nothing was checked against a target."
 
-    fea_html = _fea_section(built)
+    fea_html = _thermal_section(prob, built) + _fea_section(built)
     adv_html = _advanced_section(out_dir, record.get("advanced"))
     notes_html = _assumptions(prob, built, record)
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">

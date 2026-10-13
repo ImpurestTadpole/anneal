@@ -143,6 +143,16 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
             "zzMaxAtSupportOrLoad": bool(not keep[ie]),
             "zzShareTop5pct": float(np.sort(eta ** 2)[::-1][:max(1, len(eta) // 20)].sum() / max((eta ** 2).sum(), 1e-300)),
         }
+        if tc is not None:     # temperature of the case; reactions of the thermal load alone (total - mechanical)
+            um = fem.expand(tc["u_mech"])
+            Rm = (fem.internal_forces(um, Ee) - (F_full[c] - tc["f_th"])).reshape(-1, 3)
+            reac_th = {a: (np.asarray(R_) - Rm[anchor_nodes[a]].sum(0)).tolist() for a, R_ in reac.items()}
+            out["cases"][c].update({
+                "temperatureC": tc["tempC"], "deltaTC": tc["dT"], "deratingE": tc["fE"], "deratingYield": tc["fY"],
+                "EMPa": tc["E"], "yieldMPa": tc["yield"],
+                "uresMechanicalMaxMM": float(np.linalg.norm(um.reshape(-1, 3), axis=1).max()),
+                "uresThermalMaxMM": float(np.linalg.norm((u - um).reshape(-1, 3), axis=1).max()),
+                "reactionsThermalN": reac_th, "thermalNodalForceAbsSumN": float(np.abs(tc["f_th"]).sum())})
     out["solver"]["relativeResidual"] = worst_res
     return out
 
@@ -173,6 +183,12 @@ def report_lines(fea, mp=None):
          + ", ".join(f"{c} {n} it" for c, n in s["iterations"].items()) + f"; {s['seconds']:.1f} s"]
     for c, r in fea["cases"].items():
         L.append(f"  Load case '{c}': applied {_v(r['appliedN'])} N")
+        if "temperatureC" in r:
+            L.append(f"    temperature {r['temperatureC']:g} °C (ΔT {r['deltaTC']:+g} K), E {r['EMPa']:.4g} MPa, yield "
+                     f"{r['yieldMPa']:.4g} MPa (derating {r['deratingE']:.3g} / {r['deratingYield']:.3g}); URES "
+                     f"mechanical {r['uresMechanicalMaxMM']:.4g} mm, thermal {r['uresThermalMaxMM']:.4g} mm")
+            for a, R in r["reactionsThermalN"].items():
+                L.append(f"    reaction {a} from the thermal load: {_v(R)} N")
         for a, R in r["reactionsN"].items():
             L.append(f"    reaction {a}: {_v(R)} N")
         L.append(f"    reaction total {_v(r['reactionTotalN'])} N; equilibrium error {r['equilibriumError']:.1e}")
