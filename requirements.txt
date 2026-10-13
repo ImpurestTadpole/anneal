@@ -1,10 +1,15 @@
-# Core (all permissive licences: BSD / MIT)
+# Core (all permissive licences: BSD / MIT / Apache-2.0)
 numpy>=1.24
 scipy>=1.10
 pyamg>=5.0
 trimesh>=4.0
 scikit-image>=0.21
 matplotlib>=3.7
+manifold3d>=2.5
+# Optional: desktop window (pip install pywebview). Without it Anneal opens in the browser.
+# pywebview>=5.0
+# Optional: CalculiX large-deformation check meshing.
+# gmsh>=4.11
 # Optional: STEP import (OpenCASCADE wrapper, LGPL-2.1 with OCCT exception). Installed by the
 # install scripts when a wheel exists for your platform; without it, export STL from CAD.
 # cadquery-ocp>=7.7

@@ -12,6 +12,9 @@ surface (marching cubes) → as-built re-solve → checks, DFM, report.
 - `docs/PLAN.md` — the goal, the current state, the plan to release 0.4.0 and the road after it.
 - `docs/research/CONTEXT.md` — research facts and decisions behind the plan.
 - `docs/research/deepseek-physics-review.md` — external physics review; its status is in PLAN.md section 6.
+- `docs/README.md` — index of all documents. `docs/VV-STRATEGY.md` (how results are proved),
+  `docs/IMPROVEMENTS.md` (researched improvements), `docs/guides/DEVELOPER.md` (how to change the
+  code safely), `docs/guides/NEW-PART.md` (operator workflow), `docs/guides/THERMAL-IMPLEMENTATION.md`.
 
 ## Language
 

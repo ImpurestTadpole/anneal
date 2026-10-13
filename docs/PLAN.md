@@ -1,6 +1,7 @@
 # Anneal — plan: goal, current state, and the work to get there
 
-Read this file with `CLAUDE.md`. `CLAUDE.md` holds the rules and the short work list. This file
+Read this file with `CLAUDE.md`. The document index is `docs/README.md`; verification strategy in
+`docs/VV-STRATEGY.md`; ranked improvements in `docs/IMPROVEMENTS.md`. `CLAUDE.md` holds the rules and the short work list. This file
 holds the goal, the reasons and the full plan. `docs/research/CONTEXT.md` holds the research
 facts behind the decisions. `docs/research/deepseek-physics-review.md` is an external review that
 this plan answers item by item (section 6).
