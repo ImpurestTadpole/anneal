@@ -425,9 +425,12 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
     r_mm = max(min_member / 2, 1.5 * g.h)
     prob.derived.update({"filterRadiusMM": r_mm, "minMemberMM": min_member})
 
+    # the optimizer uses the mechanical loads only (0.4.2): thermal-only cases enter at the as-built check
+    F_opt = F if not getattr(prob, "thermal_only", None) else {c: F[c] for c in prob.mech_cases}
+
     def one_pass(vf, x0=None):
-        log(f"Optimizing at volume fraction {vf:.3f} ({len(prob.cases)} load case(s): {', '.join(prob.cases)})")
-        res = simp(g, prob.fill, prob.active, prob.frozen, fixed, F, prob.weights,
+        log(f"Optimizing at volume fraction {vf:.3f} ({len(F_opt)} load case(s): {', '.join(F_opt)})")
+        res = simp(g, prob.fill, prob.active, prob.frozen, fixed, F_opt, prob.weights,
                    prob.material["E"], prob.material["nu"], vf,
                    iters=int(opt.get("iterations", 80)) if x0 is None else max(15, int(opt.get("iterations", 80)) * 2 // 5),
                    r_mm=r_mm, x0=x0,

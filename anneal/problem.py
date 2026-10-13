@@ -213,7 +213,13 @@ class Problem:
             if v.shape != (3,):
                 raise SpecError(f"gravity '{c}' must be three numbers [ax, ay, az] in g, for example [0, 0, -1].")
             self.gravity[c] = v
-        cases = sorted({c for a in self.anchors for c in a.loads} | set(self.gravity))
+        self.t_ref, self.t_case = 20.0, {}
+        if spec.get("thermal") is not None:
+            self._parse_thermal(spec["thermal"])
+        self.mech_cases = sorted({c for a in self.anchors for c in a.loads} | set(self.gravity))
+        self.thermal_only = sorted(set(self.t_case) - set(self.mech_cases))
+        self.disp_incl_thermal = bool(spec.get("limits", {}).get("displacementIncludesThermal", False))
+        cases = sorted({c for a in self.anchors for c in a.loads} | set(self.gravity) | set(self.t_case))
         lc = spec.get("loadCases", {})
         unknown = set(lc) - set(cases)
         if unknown:
@@ -230,6 +236,57 @@ class Problem:
             self.model_path = mpath
             self.mesh = load_mesh(mpath, log)
         self.derived = {}
+
+    THERMAL_FORM = ('"thermal": {"referenceTempC": 20, "cases": {"caseName": tempC}} (temperatures in °C; '
+                    'a case name that has loads runs at that temperature, a new name is a thermal-only case)')
+
+    def _parse_thermal(self, th):
+        """thermal.referenceTempC (stress-free temperature, default 20 °C) and thermal.cases {case: °C}."""
+        if not isinstance(th, dict):
+            raise SpecError(f"thermal must be an object: {self.THERMAL_FORM}.")
+        unknown = sorted(set(th) - {"referenceTempC", "cases"})
+        if unknown:
+            raise SpecError(f"thermal has unknown key(s) {unknown}. Use {self.THERMAL_FORM}.")
+        try:
+            self.t_ref = float(th.get("referenceTempC", 20.0))
+        except (TypeError, ValueError):
+            raise SpecError("thermal.referenceTempC must be one number in °C (the temperature at which the part "
+                            "has no thermal stress, usually the assembly temperature, 20).") from None
+        cases = th.get("cases") or {}
+        if not isinstance(cases, dict):
+            raise SpecError(f"thermal.cases must be an object {{\"caseName\": tempC}}. Use {self.THERMAL_FORM}.")
+        for c, t in cases.items():
+            try:
+                t = float(t)
+            except (TypeError, ValueError):
+                raise SpecError(f"thermal case '{c}' must be one number, the part temperature in °C, not {t!r}.") from None
+            if not np.isfinite(t) or t <= -273.15:
+                raise SpecError(f"thermal case '{c}': {t:g} °C is below absolute zero. Give the part temperature in °C.")
+            self.t_case[str(c)] = t
+        if not np.isfinite(self.t_ref) or self.t_ref <= -273.15:
+            raise SpecError("thermal.referenceTempC is below absolute zero. Give it in °C (usually 20).")
+        if not self.t_case:
+            return
+        mat = self.material
+        mname = mat.get("name", "inline")
+        if "alpha" not in mat:
+            raise SpecError(f"thermal: material '{mname}' has no alpha (expansion coefficient). Add alpha (1/K) to the "
+                            f"material in the library or the spec, from a datasheet or a test (aluminium about 2.3e-5, "
+                            f"PLA about 7e-5). Anneal has no default value.")
+        limit = mat.get("maxServiceTempC")
+        for c, t in self.t_case.items():
+            if limit is not None and t > limit:
+                raise SpecError(f"thermal case '{c}' runs at {t:g} °C, above the service limit of material '{mname}' "
+                                f"(maxServiceTempC {limit:g} °C). The linear model is not valid there. Choose a material "
+                                f"with a higher service temperature, or lower the case temperature.")
+        table = mat.get("tempDerating")
+        if table:
+            lo, hi = table[0][0], table[-1][0]
+            for c, t in self.t_case.items():
+                if not lo <= t <= hi:
+                    raise SpecError(f"thermal case '{c}' runs at {t:g} °C, outside the tempDerating table of material "
+                                    f"'{mname}' ({lo:g} to {hi:g} °C). Add a row at {t:g} °C or beyond to the table; "
+                                    f"Anneal does not extrapolate material data.")
 
     # ------------------------------------------------------------------ build
     def build(self):

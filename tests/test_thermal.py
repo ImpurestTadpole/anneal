@@ -131,3 +131,68 @@ def test_inline_material_keeps_thermal_keys_and_old_materials_do_not_change():
     assert m["alpha"] == 2e-5 and m["maxServiceTempC"] == 150.0
     plain = get_material({"E": 70000, "nu": 0.3, "density": 2.7, "yield": 200})
     assert not set(plain) & {"alpha", "alphaZ", "maxServiceTempC", "tempDerating"}
+
+
+# ------------------------------------------------------------------ H3: the "thermal" spec
+from anneal.problem import Problem, SpecError  # noqa: E402
+
+
+def _bar_spec(material=None, **over):
+    """A bar 40 x 10 x 10 mm held at x = 0, loaded at x = 40 (voxels of 2 mm: a few hundred elements)."""
+    s = {"name": "tbar", "designSpace": {"type": "box", "min": [0, 0, 0], "max": [40, 10, 10]},
+         "material": dict(TEST_MAT if material is None else material), "process": "none",
+         "resolution": {"voxelMM": 2.0},
+         "anchors": [{"name": "wall", "role": "fixed", "region": {"type": "box", "min": [-1, -1, -1], "max": [0.9, 11, 11]}},
+                     {"name": "tip", "role": "load", "region": {"type": "box", "min": [39.1, -1, -1], "max": [41, 11, 11]},
+                      "loads": {"main": [0, 0, -100]}}],
+         "objective": {"volumeFraction": 0.5}, "optimizer": {"iterations": 25},
+         "output": {"report": False, "formats": ["stl"]}}
+    s.update(over)
+    return s
+
+
+def _prob(**over):
+    return Problem(spec=_bar_spec(**over), log=lambda *a: None)
+
+
+def test_thermal_cases_join_the_load_cases():
+    p = _prob(thermal={"referenceTempC": 20, "cases": {"main": 60, "cold": -20}})
+    assert p.cases == ["cold", "main"] and p.mech_cases == ["main"] and p.thermal_only == ["cold"]
+    assert p.t_ref == 20 and p.t_case == {"main": 60.0, "cold": -20.0}
+    assert p.disp_incl_thermal is False
+    assert _prob(limits={"displacementIncludesThermal": True}).disp_incl_thermal is True
+
+
+def test_no_thermal_key_leaves_the_problem_as_before():
+    p = _prob()
+    assert p.cases == ["main"] and p.t_case == {} and p.thermal_only == [] and p.t_ref == 20.0
+
+
+@pytest.mark.parametrize("thermal, words", [
+    ([20, 60], "must be an object"),
+    ({"referenceTemp": 20, "cases": {"main": 60}}, "unknown key"),
+    ({"referenceTempC": "warm", "cases": {"main": 60}}, "referenceTempC must be one number"),
+    ({"cases": [60]}, "cases must be an object"),
+    ({"cases": {"main": "hot"}}, "must be one number"),
+    ({"cases": {"main": -300}}, "below absolute zero"),
+    ({"cases": {"main": 151}}, "above the service limit"),
+    ({"cases": {"main": -50}}, "outside the tempDerating table"),
+])
+def test_thermal_spec_errors_name_the_fix(thermal, words):
+    with pytest.raises(SpecError, match=words):
+        _prob(thermal=thermal)
+
+
+def test_service_limit_message_names_the_limit_and_the_fix():
+    with pytest.raises(SpecError) as e:
+        _prob(thermal={"cases": {"main": 160}})
+    msg = str(e.value)
+    assert "160" in msg and "150" in msg and "maxServiceTempC" in msg and "higher service temperature" in msg
+
+
+def test_material_without_alpha_stops_a_thermal_run():
+    m = {k: v for k, v in TEST_MAT.items() if k != "alpha"}
+    with pytest.raises(SpecError, match="no alpha") as e:
+        _prob(material=m, thermal={"cases": {"main": 60}})
+    assert "Add alpha (1/K) to the material" in str(e.value)
+    _prob(material=m)                                   # without a thermal case, alpha is not needed
