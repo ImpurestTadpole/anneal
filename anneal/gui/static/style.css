@@ -48,7 +48,7 @@
   --stage2: #c3bfb5;
   --grid-major: #8f8a7f;
   --grid-minor: #b1aca2;
-  --part-model: #b9bdc0;
+  --part-model: #c4c8cb;
   --part-result: #9fb0bd;
   --hold: #0b6f6a;
   --push: #b0380f;
@@ -144,8 +144,8 @@ a { color: var(--accent-text); }
 #quit:hover { color: var(--bad); }
 
 /* ---------------------------------------------------------------- workbench: notebook | viewport | inspector */
-#workbench { flex: 1; display: grid; grid-template-columns: minmax(330px, 380px) minmax(0, 1fr) 208px; min-height: 0; }
-#workbench.noInspector { grid-template-columns: minmax(330px, 380px) minmax(0, 1fr) 0; }
+#workbench { flex: 1; display: grid; grid-template-columns: clamp(330px, 22vw, 430px) minmax(0, 1fr) clamp(200px, 12vw, 240px); min-height: 0; }
+#workbench.noInspector { grid-template-columns: clamp(330px, 22vw, 430px) minmax(0, 1fr) 0; }
 #workbench.noInspector #inspector { display: none; }
 .notebook { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line-strong); background: var(--ground); }
 .paneHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 28px; padding: 0 12px; flex: none;

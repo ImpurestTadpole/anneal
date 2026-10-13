@@ -44,7 +44,7 @@ function smoothNormals(geom) {
 
 const LABEL_FONT = (fs) => `600 ${fs}px "IBM Plex Mono", Consolas, ui-monospace, monospace`;
 function labelSprite(text, color, chip = true) {
-  // a square readout chip: dark plate, coloured bar and text (the same in both themes)
+  // a square readout chip: dark plate, coloured bar, light text (the same in both themes)
   const c = document.createElement("canvas"), dpr = 2, fs = 24;
   const ctx = c.getContext("2d");
   ctx.font = LABEL_FONT(fs);
@@ -56,7 +56,7 @@ function labelSprite(text, color, chip = true) {
     ctx.fillStyle = color; ctx.fillRect(0, 0, 5, fs + 16);
   }
   ctx.font = LABEL_FONT(fs);
-  ctx.fillStyle = color; ctx.textBaseline = "middle"; ctx.fillText(text, chip ? 16 : 4, (fs + 16) / 2 + 1);
+  ctx.fillStyle = chip ? "#f2efe6" : color; ctx.textBaseline = "middle"; ctx.fillText(text, chip ? 16 : 4, (fs + 16) / 2 + 1);
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
   s.userData.aspect = w / (fs + 16);
@@ -79,7 +79,7 @@ export class Viewer {
     this.orthoH = 100;                                                       // ortho frustum height at zoom 1, mm
     this.camera = this.persp;
     this.scene.add(this.persp, this.orthoCam);
-    this.scene.add(new THREE.HemisphereLight(0xfbf8f0, 0x7d858c, 1.35));   // warm sky, cool ground
+    this.scene.add(new THREE.HemisphereLight(0xfbf8f0, 0x8a9198, 1.5));   // warm sky, cool ground
     this.head = new THREE.DirectionalLight(0xffffff, 1.65);                  // key light rides with the camera
     this.head.position.set(0.4, 0.8, 1);
     this.camera.add(this.head);

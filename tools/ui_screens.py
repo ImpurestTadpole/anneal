@@ -47,15 +47,15 @@ def wait_job(job):
 
 def prepare():
     st = get("/api/state")
-    if any(p["id"] == "bracket" for p in st["projects"]):
+    if any(p["id"] == "bracket" and p.get("runs") for p in st["projects"]):
         return
     stl = open(os.path.join(root, "examples", "bracket.stl"), "rb").read()
     p = post("/api/projects", stl, raw=True, headers={"X-Filename": "bracket.stl", "Content-Type": "application/octet-stream"})
     ex = json.load(open(os.path.join(root, "examples", "bracket.json")))
     spec = {"name": p["id"], "model": p["model"], "designSpace": "model", "material": "PLA-FDM", "resolution": "draft",
             "anchors": ex["anchors"], "keepOut": [], "keep": [], "loadCases": ex["loadCases"],
-            "objective": {"minimise": "mass", "volumeFraction": 0.35, "combine": "worst"},
-            "optimizer": {"iterations": 30, "massPasses": 2, "penalty": 3, "move": 0.2, "sharpness": 4},
+            "objective": {"volumeFraction": 0.35, "combine": "worst"},
+            "optimizer": {"iterations": 25, "massPasses": 1, "penalty": 3, "move": 0.2, "sharpness": 4},
             "limits": {"maxDisplacementMM": 0.6, "minSafetyFactor": 2},
             "loadPaths": {"guard": True, "margin": 0.1, "maxDrop": 0.15, "repair": True},
             "output": {"formats": ["stl"], "edges": "smooth", "detail": "coarse", "isoLevel": "auto", "report": False,
@@ -107,7 +107,7 @@ try:
                 shot("run")
                 step(pg, 5)
                 pg.wait_for_timeout(1500)
-                pg.click('[data-view="stress"]'); pg.wait_for_timeout(1500)
+                pg.evaluate("document.querySelector('#tools [data-view=stress]').click()"); pg.wait_for_timeout(2000)
                 shot("result")
                 pg.click("#navHistory"); pg.wait_for_timeout(1200)
                 shot("history")

@@ -174,7 +174,15 @@ All numbers use tabular figures.
 | Error log / messages | Status line plus the log in block 5 | The status line shows the last log line during a job. |
 | Ribbon of block types | Not adopted | Anneal has a fixed pipeline, not a free graph. |
 
-## 8. Ideas left for later
+## 8. Screenshots
+
+`docs/ui/screenshots/` holds `before-*` (0.4.0 preview look) and `after-*` (this design) for six
+views (home, setup = block 2, run = block 5, result = block 6 with stress colours, history, library)
+at 1280x800 and 1920x1080, light and dark. Make them again with
+`python tools/ui_screens.py <out> <workspace>` (headless Chromium; the first call runs a short draft
+optimization of the bracket example). The committed files are WebP (quality 90) to keep the repository small.
+
+## 9. Ideas left for later
 
 - A "stale" lamp for the result block when the settings changed after the run (needs a reliable
   comparison of the run spec and the current spec in `app.js`).

@@ -102,6 +102,7 @@ function statusLine() {
     meter.hidden = false;
   } else meter.hidden = true;
   if (S.version) $("#ver").textContent = `ANNEAL ${S.version}`;
+  $("#status").style.visibility = onWorkbench() ? "" : "hidden";   // viewport messages belong to the workbench
   lamps();
 }
 setInterval(statusLine, 500);

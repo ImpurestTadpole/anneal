@@ -1,3 +1,7 @@
+IBM Plex Sans (Copyright 2018 IBM Corp.) and IBM Plex Mono (Copyright 2017 IBM Corp.).
+Files: plex-sans-400/500/600.woff2 and plex-mono-400/500/600.woff2, Latin subset, from @fontsource 5.1.0.
+Both fonts use the license below.
+
 Copyright 2018 IBM Corp. All rights reserved.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
