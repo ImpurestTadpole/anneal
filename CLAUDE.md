@@ -7,6 +7,12 @@ window (pywebview).
 Pipeline: spec JSON + model (STL or STEP) → voxel grid → SIMP optimization (hex8 FEM, AMG-CG) →
 surface (marching cubes) → as-built re-solve → checks, DFM, report.
 
+## Read next
+
+- `docs/PLAN.md` — the goal, the current state, the plan to release 0.4.0 and the road after it.
+- `docs/research/CONTEXT.md` — research facts and decisions behind the plan.
+- `docs/research/deepseek-physics-review.md` — external physics review; its status is in PLAN.md section 6.
+
 ## Language
 
 The owner wants most explanations in plain technical English (ASD-STE100 / ISO 24495-1): short
