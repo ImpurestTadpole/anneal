@@ -96,6 +96,9 @@ GUI and docs
 - [ ] README: e9 element, gravity, pressure, edges/detail, advanced output, machining, FEA study,
       ZZ error, report Assumptions/Not modelled/Verification, provenance, 10-check gate.
 
+0.4.1 (after v0.4.0; plan in docs/PLAN.md section 4A)
+- [ ] Torque load type: `torques` in N·m on load anchors, gate V11 torsion, twist output, GUI, CalculiX cross-check.
+
 Later
 - [ ] Bolt preload load case (DeepSeek plan 6.3).
 - [ ] Release: merge release-0.4 → master after the proof, tag v0.4.0, build the zip.

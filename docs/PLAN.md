@@ -157,6 +157,109 @@ Merge release-0.4 into master. Tag `v0.4.0`. Build the zip. Install it on Window
 
 ---
 
+## 4A. Plan for release 0.4.1 — torque load
+
+0.4.1 adds one load type: a **torque** (a pure moment) on a load region. Examples: a drive shaft
+in a bore, a lever hub, a motor flange. 0.4.1 starts only after 0.4.0 is on master and tagged.
+
+### Scope
+
+In scope:
+- A torque per load case on a load anchor, alone or together with a force or a pressure.
+- The optimizer, the as-built re-solve, the FEA study, the CalculiX sidecar, the report and the GUI
+  all use the torque.
+- A new gate check for torsion.
+- Fixes from owner feedback on 0.4.0 (bugs only, no new features).
+
+Not in scope (see section 5):
+- Bolt preload (tightening torque → axial clamp force). This is a different thing: it is 0.5 item 4.
+  The README must say the difference.
+- A torque as an impact load. `impact` stays force-only; a spec with an impact on a torque-only
+  anchor gives a SpecError that names the fix.
+- A rotation limit in the optimizer (`limits.maxRotationDeg` is reported and checked, not optimized).
+
+### Definitions
+
+| Term | Meaning |
+|---|---|
+| Torque | A pure moment M = [Mx, My, Mz]. Its net force is zero. |
+| Node centroid | The mean position of the anchor's nodes on the active voxels. |
+| Twist | The rigid rotation of the anchor's nodes that fits their displacement best (least squares), in degrees. |
+
+### Spec (proposed)
+
+```json
+{ "name": "hub", "role": "load", "feature": {"bore": {"bolt": "M8", "at": [0,0,0]}},
+  "torques": { "drive": [0, 0, 12.5] },
+  "loads":   { "drive": [0, 200, 0] } }
+```
+
+- `torques`: `{"caseName": [Mx, My, Mz]}` in **N·m**. The solver uses N·mm (× 1000). A
+  `torques` case and a `loads` case with the same name add together.
+- `limits.maxRotationDeg` (optional): the largest permitted twist of any load anchor.
+- A spec without `torques` must give bit-identical results to 0.4.0 (regression).
+
+### How the torque goes onto nodes
+
+For anchor nodes i at positions x_i, with centroid c and r_i = x_i − c:
+1. Make the node inertia tensor I = Σ_i (|r_i|² E − r_i r_iᵀ) (E is the 3×3 unit matrix).
+2. Solve I ω = M for ω.
+3. Nodal force f_i = ω × r_i.
+4. Then Σ f_i = ω × Σ r_i = 0 and Σ r_i × f_i = I ω = M exactly, for any node set. It is the
+   smallest set of nodal forces (least squares) with these two sums. It matches a rigid hub with a
+   linear shear distribution (the usual RBE3 or "spider" model in commercial FEA).
+5. The nodes change with the active set (as forces do today), so the rule runs in
+   `Problem.boundary()` each time. Guard: if I is near singular (all nodes on one line), give a
+   SpecError that tells the user to use a larger region.
+
+Note: a simpler rule, f_i = M × s_i / Σ|s_j|² with s_i normal to the torque axis, is exact only
+for a symmetric node set. It gives a wrong moment on a tilted or one-sided region. Do not use it.
+
+The optimizer needs no change: the compliance is linear in the nodal force vector.
+
+### Work items
+
+| ID | Work | Owner (section 3) | Acceptance |
+|---|---|---|---|
+| T1 | Parse `torques` in `Anchor`; validate shape and units; store per case. Store `limits.maxRotationDeg`. | solver-verifier (`problem.py`) | Clear SpecError for a wrong shape, an empty region, an impact on a torque-only anchor. |
+| T2 | Nodal distribution in `Problem.boundary()` (rule above). Add the torque cases to `self.cases`. | solver-verifier (`problem.py`) | Unit test: Σf = 0 and Σ r×f = M to 1e-10 relative, on a bore, a pad and an off-axis box. |
+| T3 | Twist in degrees per load anchor and case (least-squares rotation of anchor nodes), in run.json and the result. Check row against `maxRotationDeg`. | solver-verifier (`run.py`) | Rigid-rotation test: an imposed small rotation gives back the same angle. |
+| T4 | FEA study: moment reactions at fixed anchors and a moment-equilibrium residual next to the force residual. | solver-verifier (`fea.py`) | Moment equilibrium < 1e-6 relative on the torsion test part. |
+| T5 | Gate check V11: torsion of a square bar, θ = T·L / (G · k₁ · a⁴), k₁ = 0.1406 (Saint-Venant). Set the tolerance from measured data at 4, 6, 8 voxels across (as was done for V3 with e9), for e9 and hex8fi. | solver-verifier (`validate.py`, `provenance.py`) | `python -m anneal validate` → "GATE: OPEN - 11 of 11". The provenance hash changes; the gate result is stored again. |
+| T6 | CalculiX sidecar: the same rule on the tet10 anchor node set. Cross-check on a torsion bracket. | solver-verifier (`sidecar.py`, `tools/ccx_bracket.py`) | e9 twist within 5 % of CalculiX tet10. |
+| T7 | Report: the load table shows torques in N·m; "Assumptions" states the distribution rule; "Not modelled" states that the hub is not a separate rigid body and there is no contact or slip in the bore. | solver-verifier (`report.py`) | Report on the example shows all three. |
+| T8 | Advanced output: twist per case and the torque share carried by each support. | solver-verifier (`advanced.py`) | Statements name the support that carries most of the torque. |
+| T9 | GUI: a "Torque (N·m)" vector row per case on load anchors, next to Force. A curved-arrow glyph about the axis in the viewer. Old projects open unchanged. | gui-docs (`app.js`, `viewer.js`) | `tools/gui_smoke.py`: set a torque, save, reload, run; the spec holds `torques`. |
+| T10 | Example `examples/torque-hub.json` (hub on a bore, fixed on a bolt circle) and a golden test for it. | solver-verifier | Golden test passes for e9 and hex8fi. |
+| T11 | README: torque option, units, the rule, the difference from bolt preload. CHANGELOG 0.4.1. | gui-docs | Every new spec key is in the README. |
+| T12 | Owner feedback fixes on 0.4.0 (bugs only). | by area | Each fix has a test. |
+
+### Order
+
+1. T1, T2 (with tests) → T5 (the gate must pass before anything else uses the torque).
+2. T3, T4, T6, T7, T8 in parallel.
+3. T9 after T1 (the spec shape is fixed).
+4. T10, T11, then the proof.
+
+### Proof for 0.4.1
+
+The same proof as 0.4.0 (`CLAUDE.md`, "Proof"), with these changes:
+- The gate is 11 of 11.
+- Regression: `examples/bracket.json` (no torque) gives bit-identical results to **0.4.0** with
+  both e9 and hex8fi.
+- New runs: `examples/torque-hub.json` and the CalculiX torsion cross-check (T6).
+- Branch `release-0.4.1` from tag `v0.4.0`. Merge to master, tag `v0.4.1`.
+
+### Risks
+
+| Risk | What answers it |
+|---|---|
+| Stress peaks at the bore edge (the torque goes in through few nodes) | The anchor freeze zone keeps material there; the report excludes the anchor zone from the design stress, as for forces; the ZZ indicator shows it. |
+| Users enter N·mm instead of N·m | The unit is in the key help, the GUI label and the report; a check row warns when |M| / (|F|·part size) is above 1000. |
+| The linear rule is too stiff or too soft compared with a real key or spline | The report states the rule. A key or spline model is not in 0.4.1. |
+
+---
+
 ## 5. After 0.4.0 — the road to the goal
 
 Ordered by value to the goal. Each item lists why it matters.
@@ -171,7 +274,8 @@ Ordered by value to the goal. Each item lists why it matters.
 3. **Stress near supports and loads.** Report a stress concentration range from the ZZ indicator
    instead of only excluding anchor zones. Add a "verify finer" run (`anneal run --verify`): an
    as-built-only solve at half the voxel size, with the change shown.
-4. **Bolt preload** as a load type (torque → axial force, with a proof-load warning).
+4. **Bolt preload** as a load type (tightening torque → axial clamp force, with a proof-load warning).
+   This is not the 0.4.1 torque load: that one is a moment that the part carries.
 5. **Fatigue screen**: alternating stress from two load cases versus an endurance limit from the
    library, with the assumptions stated.
 6. Small fixes from the external review: `designSpace.minFillFraction`, `resolution.subSamples`,
