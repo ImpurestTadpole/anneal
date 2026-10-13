@@ -1,4 +1,8 @@
+<p align="center"><img src="docs/images/logo.png" width="96" alt="Anneal logo"></p>
+
 # Anneal
+
+![Anneal result view: the optimized bracket coloured by von Mises stress](docs/images/gui-4-result-stress.png)
 
 Anneal makes an existing part lighter and stiffer. You open a model (STL or STEP), click where the
 part is held and where it is loaded, and set a goal. Anneal removes the material that does not
@@ -11,6 +15,8 @@ browser**, or the **command line** with a spec file. All three write the same fi
 ```
 your-part.step  +  your-part.anneal.json   ──►   your-part-optimized.stl / .3mf  +  report.html
 ```
+
+More screenshots: [docs/GUI.md](docs/GUI.md). All documents: [docs/README.md](docs/README.md).
 
 It runs on **Windows 10/11** and **Ubuntu 20.04 or newer** (also macOS). It needs no GPU.
 
