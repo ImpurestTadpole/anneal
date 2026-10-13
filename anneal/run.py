@@ -105,6 +105,7 @@ def _vm6(sig):
 def evaluate(prob, fill, label, log):
     """Solve a geometry (fill fractions, penalty 1) for every load case and measure it."""
     g = prob.grid
+    fill_in = fill
     active = prob._connected(fill >= 0.05)   # drop islands that touch no support
     fill = np.where(active, fill, 0.0)
     try:
@@ -112,9 +113,15 @@ def evaluate(prob, fill, label, log):
     except Exception as e:
         if "touches no material" in str(e) and label.startswith("Optimized"):
             name = str(e).split("'")[1]
-            raise RuntimeError(f"The optimized part lost contact with anchor '{name}'. Give that anchor a "
-                               f"larger freezeMM (for example 3) so material stays where the part is held "
-                               f"or loaded, then run again.") from None
+            cause = dict(prob.lost_anchors(fill_in)).get(name, "no material")
+            if cause == "not connected":
+                raise RuntimeError(
+                    f"The optimized part does not connect anchor '{name}' to a support: its material is a separate "
+                    f"piece. Move keep-outs away from the path between '{name}' and the supports, raise the volume "
+                    f"fraction, or keep loadPaths.guard on, then run again.") from None
+            raise RuntimeError(
+                f"The optimized part has no material at anchor '{name}'. A keep-out or hole may overlap it: move "
+                f"the keep-out, or give the anchor a larger freezeMM (for example 3), then run again.") from None
         raise
     for c, fb in prob.body_loads(fill).items():   # self-weight of this geometry
         F[c] = F[c] + fb
@@ -669,12 +676,23 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
             mesh = surface(g, f, level, upsample=up, smooth=sm, log=log)
         log(f"  {len(mesh.faces):,} triangles, watertight: {mesh.is_watertight}")
         from .finish import finish
+        smooth_mesh = mesh
         mesh, exact = finish(prob, mesh, log)
+        as_built = lambda m: np.minimum(np.maximum(voxel_fill(m, g), np.where(prob.frozen, prob.fill, 0)),
+                                        1 - prob.void_fill)
+        log("Re-solving the as-built part (voxelized from the exported surface)")
+        fill_b = as_built(mesh)
+        if exact is not None and mesh is not smooth_mesh:
+            lost = prob.lost_anchors(fill_b)
+            if lost:   # never lose a run over the finishing step: fall back to the smooth surface
+                which = ", ".join(f"'{n}' ({c})" for n, c in lost)
+                exact["skipped"] = (f"exact geometry not applied: its cuts would cut off anchor {which}. "
+                                    f"Move the keep-outs away from these anchors to use exact geometry.")
+                log("  " + exact["skipped"] + " The smooth surface is used.")
+                mesh = smooth_mesh
+                fill_b = as_built(mesh)
         if exact is not None:
             prob.derived["exactFeatures"] = exact
-        log("Re-solving the as-built part (voxelized from the exported surface)")
-        fill_b = voxel_fill(mesh, g)
-        fill_b = np.minimum(np.maximum(fill_b, np.where(prob.frozen, prob.fill, 0)), 1 - prob.void_fill)
         built = evaluate(prob, fill_b, "Optimized (as built)", log)
         thick = member_thickness(g, fill_b)
         n25 = float(np.percentile(thick, 25)) if thick.size else 8.0

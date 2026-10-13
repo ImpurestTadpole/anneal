@@ -411,7 +411,25 @@ class Problem:
                              "designSpaceCM3": dom_vol / 1000, "frozenCM3": frz_vol / 1000})
         return self
 
-    def _connected(self, mask):
+    def lost_anchors(self, fill):
+        """Anchors that a geometry does not reach: [(name, cause)], cause "no material" (no material in
+        the anchor region) or "not connected" (its material touches no fixed anchor and is removed)."""
+        g = self.grid
+        raw = fill >= 0.05
+        conn = self._connected(raw, quiet=True)
+        out = []
+        for mask, cause in ((raw, "no material"), (conn, "not connected")):
+            act = np.flatnonzero(mask)
+            if act.size == 0:
+                return [(a.name, cause) for a in self.anchors]
+            nodes = np.unique(g.element_nodes(act))
+            xyz = g.node_coords(nodes)
+            for a in self.anchors:
+                if a.name not in dict(out) and a.nodes(g, nodes, xyz).size == 0:
+                    out.append((a.name, cause))
+        return out
+
+    def _connected(self, mask, quiet=False):
         """Keep only face-connected pieces of the design space that touch a fixed anchor."""
         g = self.grid
         lab, n = ndimage.label(g.to3d(mask))
@@ -431,7 +449,7 @@ class Problem:
             keep[np.unique(lab[cand[hit]])] = True
         keep[0] = False
         dropped = n - int(keep[1:].sum())
-        if dropped:
+        if dropped and not quiet:
             self.log(f"  WARNING: {dropped} piece(s) of the design space touch no fixed anchor and were removed.")
         return keep[lab] & mask
 
