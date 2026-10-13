@@ -109,6 +109,18 @@ def thermal_strain(alpha, alpha_z=None, build_dir=None):
     return np.array([M[0, 0], M[1, 1], M[2, 2], 2 * M[0, 1], 2 * M[1, 2], 2 * M[2, 0]])
 
 
+def derate(material, temp_c):
+    """(E factor, yield factor) at temp_c by linear interpolation of the material's tempDerating table;
+    (1, 1) without a table. Problem stops a run whose case temperature is outside the table, so no
+    extrapolation happens here."""
+    tab = material.get("tempDerating")
+    if not tab:
+        return 1.0, 1.0
+    t = [float(r[0]) for r in tab]
+    return (float(np.interp(temp_c, t, [float(r[1]) for r in tab])),
+            float(np.interp(temp_c, t, [float(r[2]) for r in tab])))
+
+
 # ------------------------------------------------------------------ strength
 def hill_index(sig, X, Z, build_dir):
     """Hill failure index sqrt(f) per element (failure at 1). sig: (n, 6) global Voigt stress."""

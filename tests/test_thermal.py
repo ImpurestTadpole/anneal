@@ -279,18 +279,60 @@ def test_thermal_run_end_to_end(tmp_path):
     o = rec["results"]["optimized"]
     hot, cold = o["cases"]["main"], o["cases"]["cold"]
     assert hot["deltaTC"] == 50 and cold["deltaTC"] == -40 and cold["thermalOnly"] and not hot["thermalOnly"]
-    assert cold["maxDisplacementMechanicalMM"] == 0 and cold["complianceNmm"] == 0
+    assert cold["mechanicalDisplacementMM"] == 0 and cold["complianceNmm"] == 0
     assert cold["maxDisplacementMM"] == 0                       # the limit checks the mechanical part
-    assert cold["maxDisplacementThermalMM"] > 0 and cold["thermalStressShare"] == 1.0
-    assert hot["maxDisplacementMM"] == hot["maxDisplacementMechanicalMM"] > 0
-    assert o["maxDisplacementThermalMM"] == max(hot["maxDisplacementThermalMM"], cold["maxDisplacementThermalMM"])
+    assert cold["thermalDisplacementMM"] > 0 and cold["thermalStressShare"] == 1.0
+    assert hot["maxDisplacementMM"] == hot["mechanicalDisplacementMM"] > 0
+    assert o["thermalDisplacementMM"] == max(hot["thermalDisplacementMM"], cold["thermalDisplacementMM"])
     assert o["thermal"]["referenceTempC"] == 20 and o["thermal"]["displacementLimitUses"] == "mechanical"
 
 
 def test_mechanical_part_of_a_thermal_case_equals_the_case_without_temperature(tmp_path):
     """Linear superposition: the extra right-hand side (mechanical load alone) gives the run at 20 °C."""
-    a = _trun(tmp_path, "a")["results"]["optimized"]["cases"]["main"]
-    b = _trun(tmp_path, "b", thermal={"cases": {"main": 70}})["results"]["optimized"]["cases"]["main"]
-    assert b["maxDisplacementMechanicalMM"] == pytest.approx(a["maxDisplacementMM"], rel=1e-6)
+    m = {k: v for k, v in TEST_MAT.items() if k != "tempDerating"}        # no derating: same E at 70 °C
+    a = _trun(tmp_path, "a", material=m)["results"]["optimized"]["cases"]["main"]
+    b = _trun(tmp_path, "b", material=m, thermal={"cases": {"main": 70}})["results"]["optimized"]["cases"]["main"]
+    assert b["mechanicalDisplacementMM"] == pytest.approx(a["maxDisplacementMM"], rel=1e-6)
     assert b["complianceNmm"] == pytest.approx(a["complianceNmm"], rel=1e-6)
     assert b["peakStressMechanicalMPa"] == pytest.approx(a["peakStressMPa"], rel=1e-6)
+
+
+# ------------------------------------------------------------------ H4: derating
+def test_derate_interpolates_the_table_linearly():
+    from anneal.physics import derate
+    assert derate(TEST_MAT, 20) == (1.0, 1.0)
+    assert derate(TEST_MAT, 70) == pytest.approx((0.75, 0.75))           # half way from 20 (1.0) to 120 (0.5)
+    assert derate(TEST_MAT, 135) == pytest.approx((0.45, 0.45))
+    assert derate({k: v for k, v in TEST_MAT.items() if k != "tempDerating"}, 135) == (1.0, 1.0)
+
+
+def test_derating_factor_half_doubles_displacement_and_halves_yield(tmp_path):
+    """TEST-ONLY table: factor 0.5 at 120 °C. The mechanical displacement doubles; the yield halves; the
+    mechanical stress is unchanged (same loads on the same shape)."""
+    a = _trun(tmp_path, "a")["results"]["optimized"]
+    b = _trun(tmp_path, "b", thermal={"cases": {"main": 120}})["results"]["optimized"]
+    ca, cb = a["cases"]["main"], b["cases"]["main"]
+    assert cb["deratingE"] == 0.5 and cb["EMPa"] == 35000 and cb["yieldMPa"] == 100
+    assert cb["mechanicalDisplacementMM"] == pytest.approx(2 * ca["maxDisplacementMM"], rel=1e-6)
+    assert cb["peakStressMechanicalMPa"] == pytest.approx(ca["peakStressMPa"], rel=1e-6)
+    assert cb["safetyFactor"] == pytest.approx(100.0 / cb["peakStressMPa"])
+    assert b["safetyFactor"] == cb["safetyFactor"]
+
+
+def test_impact_uses_the_derated_stiffness_of_the_case_it_names():
+    from anneal.run import impact_check
+    spec = _bar_spec(thermal={"cases": {"main": 120}},
+                     impact={"hit": {"anchor": "tip", "massKg": 1.0, "speedMS": 1.0, "direction": [-1, 0, 0]}})
+    p = Problem(spec=spec, log=lambda *a: None).build()
+    fill = np.where(p.active, 1.0, 0.0)
+    cold = impact_check(p, fill, 1.0, lambda *a: None)["hit"]
+    p.spec["impact"]["hit"]["case"] = "main"
+    hot = impact_check(p, fill, 1.0, lambda *a: None)["hit"]
+    assert hot["stiffnessNperMM"] == pytest.approx(0.5 * cold["stiffnessNperMM"], rel=1e-6)
+    assert hot["peakForceN"] == pytest.approx(cold["peakForceN"] / np.sqrt(2), rel=1e-6)
+    assert hot["safetyFactor"] == pytest.approx(cold["safetyFactor"] * 0.5 * np.sqrt(2), rel=1e-6)
+    assert hot["temperatureC"] == 120
+    p.spec["impact"]["hit"]["case"] = "nope"
+    from anneal.physics import PhysicsError
+    with pytest.raises(PhysicsError, match="case 'nope'"):
+        impact_check(p, fill, 1.0, lambda *a: None)

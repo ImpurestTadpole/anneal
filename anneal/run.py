@@ -47,8 +47,9 @@ def _sha(path):
 
 
 def _derating(prob, temp_c):
-    """(E factor, yield factor) of the material at temp_c."""
-    return 1.0, 1.0
+    """(E factor, yield factor) of the material at temp_c (tempDerating; (1, 1) without a table)."""
+    from .physics import derate
+    return derate(prob.material, temp_c)
 
 
 def _thermal_setup(prob, fem, Ee):
@@ -199,8 +200,8 @@ def evaluate(prob, fill, label, log):
             res["cases"][c].update({
                 "temperatureC": tc["tempC"], "deltaTC": tc["dT"], "thermalOnly": c in prob.thermal_only,
                 "deratingE": tc["fE"], "deratingYield": tc["fY"], "EMPa": tc["E"], "yieldMPa": tc["yield"],
-                "maxDisplacementMechanicalMM": float(mag_m.max()), "maxDisplacementThermalMM": float(mag_t.max()),
-                "maxDisplacementTotalMM": float(mag.max()),
+                "mechanicalDisplacementMM": float(mag_m.max()), "thermalDisplacementMM": float(mag_t.max()),
+                "totalDisplacementMM": float(mag.max()),
                 "peakStressMechanicalMPa": p_m, "peakStressThermalMPa": p_t,
                 "thermalStressShare": p_t / (p_m + p_t) if p_m + p_t > 0 else 0.0,
                 "safetyFactor": sf_case[-1]})
@@ -219,9 +220,9 @@ def evaluate(prob, fill, label, log):
             res["safetyFactorLayers"] = min(sfl_case)
     if th:
         tcs = {c: res["cases"][c] for c in th}
-        res["maxDisplacementThermalMM"] = max(r["maxDisplacementThermalMM"] for r in tcs.values())
-        res["maxDisplacementMechanicalMM"] = max(
-            [r["maxDisplacementMechanicalMM"] for r in tcs.values()]
+        res["thermalDisplacementMM"] = max(r["thermalDisplacementMM"] for r in tcs.values())
+        res["mechanicalDisplacementMM"] = max(
+            [r["mechanicalDisplacementMM"] for r in tcs.values()]
             + [res["cases"][c]["maxDisplacementMM"] for c in prob.cases if c not in th])
         res["thermal"] = {"referenceTempC": prob.t_ref,
                           "displacementLimitUses": "total" if prob.disp_incl_thermal else "mechanical",
@@ -286,11 +287,22 @@ def impact_check(prob, fill, lf, log):
             raise PhysicsError(f"{where}: give direction, the way the mass moves, as three numbers (for example [0, 0, -1]).")
         d = d / np.linalg.norm(d)
         E_imp, v = impact_energy(case, where)
+        # optional "case": the impact happens at that load case's temperature (derated E and yield, 0.4.2)
+        cn, fE, fY = case.get("case"), 1.0, 1.0
+        E0, Y = prob.material["E"], prob.material["yield"]
+        if cn is not None:
+            if cn not in prob.cases:
+                raise PhysicsError(f"{where}: case '{cn}' is not a load case. Use one of: {', '.join(prob.cases)}.")
+            if cn in getattr(prob, "t_case", {}):
+                fE, fY = _derating(prob, prob.t_case[cn])
+                E0, Y = E0 * fE, Y * fY
         nodes = anchor_nodes[an]
         Fu = np.zeros(3 * g.nnode)
         for c in range(3):
             Fu[3 * nodes + c] = d[c] / nodes.size          # 1 N in total, spread over the region
         u = fem.expand(fem.solve(K, [fem.reduce_load(Fu)], rtol=1e-10)[0])
+        if fE != 1.0:
+            u = u / fE                                         # stiffness fE K at the case temperature
         delta = float((u.reshape(-1, 3)[nodes] @ d).mean())  # mm per N at the hit region
         if delta <= 0:
             raise PhysicsError(f"{where}: the part does not resist a push along {d.round(3).tolist()} at '{an}'.")
@@ -303,6 +315,10 @@ def impact_check(prob, fill, lf, log):
         r = {"anchor": an, "speedMS": v, "energyJ": E_imp / 1000.0, "stiffnessNperMM": k,
              "peakForceN": F, "deflectionMM": float(np.sqrt(2 * E_imp / (k * lf))),
              "peakStressMPa": peak, "safetyFactor": Y / peak if peak > 0 else float("inf")}
+        if cn is not None:
+            r["case"] = cn
+            if cn in getattr(prob, "t_case", {}):
+                r.update({"temperatureC": prob.t_case[cn], "deratingE": fE, "deratingYield": fY})
         if D is not None:
             zf = float(proc.get("zStrengthFactor", 1.0))
             hi = float(np.percentile(hill_index(sig, Y, Y * zf, bdir)[keep], 99.5))
