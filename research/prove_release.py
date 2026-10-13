@@ -27,8 +27,15 @@ def sha(p):
     return hashlib.sha256(open(p, "rb").read()).hexdigest()
 
 
-def slice_support(stl, tag):
-    """Support filament (cm3) from PrusaSlicer: slice with and without supports."""
+def slice_support(stl, tag, up="+z"):
+    """Support filament (cm3) from PrusaSlicer: slice with and without supports. up='+x' turns the
+    part so its +X axis points up (build along +X)."""
+    import trimesh
+    if up == "+x":
+        m = trimesh.load(stl)
+        m.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [0, 1, 0]))
+        stl = os.path.join(P, f"{tag}_xup.stl")
+        m.export(stl)
     vals = {}
     for mode, flag in (("none", ""), ("support", "--support-material --support-material-threshold 45")):
         g = os.path.join(P, f"{tag}_{mode}.gcode")
@@ -64,6 +71,14 @@ def key_numbers(rec, d):
             "stlSha256": sha(os.path.join(d, [f for f in os.listdir(d) if f.endswith("-optimized.stl")][0])),
             "densitySha256": sha(os.path.join(d, "density.npy"))}
 kb, k0 = key_numbers(b, BASE), key_numbers(r0, os.path.join(P, "R0"))
+
+
+def model_3mf(d):
+    import zipfile
+    f = [x for x in os.listdir(d) if x.endswith(".3mf")][0]
+    t = zipfile.ZipFile(os.path.join(d, f)).read("3D/3dmodel.model").decode()
+    return hashlib.sha256(re.sub(r'UUID="[0-9a-f-]+"', 'UUID=""', t).encode()).hexdigest()
+kb["3mfModelSha256NoUUID"], k0["3mfModelSha256NoUUID"] = model_3mf(BASE), model_3mf(os.path.join(P, "R0"))
 same = {k: kb[k] == k0[k] for k in kb if k != "anneal"}
 ev["regression"] = {"baseline": kb, "release": k0, "identical": same, "allIdentical": all(same.values()),
                     "baselineCommit": "17a3e31 (0.3.0)"}
@@ -76,11 +91,13 @@ x0 = np.load(os.path.join(P, "R0", "density.npy"))
 x1 = np.load(os.path.join(P, "R1", "density.npy"))
 ev["overhang"] = {
     "R0": {"massG": o0["massG"], "maxDisplacementMM": o0["maxDisplacementMM"], "dfm": r0.get("dfm"),
-           "unsupportedVoxels": unsupported_fraction(x0, 2, 1, active=x0 > 0.05),
-           "slicer": slice_support(os.path.join(P, "R0", "bracket-optimized.stl"), "R0")},
+           "unsupportedVoxelsZup": unsupported_fraction(x0, 2, 1, active=x0 > 0.05),
+           "unsupportedVoxelsXup": unsupported_fraction(x0, 0, 1, active=x0 > 0.05),
+           "slicer": slice_support(os.path.join(P, "R0", "bracket-optimized.stl"), "R0z"),
+           "slicerXup": slice_support(os.path.join(P, "R0", "bracket-optimized.stl"), "R0x", "+x")},
     "R1": {"massG": o1["massG"], "maxDisplacementMM": o1["maxDisplacementMM"], "dfm": r1.get("dfm"),
-           "unsupportedVoxels": unsupported_fraction(x1, 2, 1, active=x1 > 0.05),
-           "slicer": slice_support(os.path.join(P, "R1", "bracket-overhang-optimized.stl"), "R1"),
+           "unsupportedVoxelsXup": unsupported_fraction(x1, 0, 1, active=x1 > 0.05),
+           "slicerXup": slice_support(os.path.join(P, "R1", "bracket-overhang-optimized.stl"), "R1x", "+x"),
            "buckling": o1.get("buckling"), "checks": [(c["name"], c["ok"], c["value"]) for c in r1["checks"]]}}
 
 # 4. print-aware (R2)

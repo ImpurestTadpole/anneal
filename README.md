@@ -400,7 +400,7 @@ Design rules carried over from the Phase 0 spike:
 | V8 print-aware stiffness and Hill strength | E and Ez exact; Hill = von Mises when strengths are equal |
 | V9 overhang filter | gradient = finite differences; floating material removed |
 
-Tests: `pip install pytest` then `python -m pytest -q` (45 tests, 15–25 minutes on 2 cores).
+Tests: `pip install pytest` then `python -m pytest -q` (46 tests, 15–25 minutes on 2 cores).
 `VERIFICATION.md` lists the release evidence: tests, gate, a bit-for-bit comparison with 0.3.0, and
 independent checks with CalculiX and PrusaSlicer.
 
