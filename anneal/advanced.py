@@ -141,12 +141,62 @@ def reactions_png(prob, built, path):
     return _save(fig, path)
 
 
+def _thermal_material_row(prob, built, name, m):
+    """The same geometry in material m with temperature (0.4.2): derated values at each case temperature.
+    Mechanical displacement scales with 1/(E fE); thermal stress with E alpha fE (bounded above by adding
+    it to the mechanical stress). A material without alpha, above its service limit or without derating
+    data at a case temperature gets a note and no numbers."""
+    from .physics import derate
+    m0 = prob.material
+    E, Y, rho = float(m["E"]), float(m["yield"]), float(m["density"])
+    row = {"name": name, "massG": built["volumeCM3"] * rho, "current": name == m0.get("name"),
+           "displacementMM": float("nan"), "safetyFactor": float("nan")}
+    temps = {c: r["temperatureC"] for c, r in built["cases"].items() if "temperatureC" in r}
+    if "alpha" not in m:
+        row["note"] = "no alpha"
+        return row
+    lim = m.get("maxServiceTempC")
+    if lim is not None and max(temps.values()) > float(lim):
+        row["note"] = f"above its service limit {float(lim):g} °C"
+        return row
+    tab = m.get("tempDerating")
+    if tab and any(not tab[0][0] <= t <= tab[-1][0] for t in temps.values()):
+        row["note"] = "no derating data at a case temperature"
+        return row
+    disp, sf = 0.0, float("inf")
+    for c, r in built["cases"].items():
+        if c in temps:
+            fE, fY = derate(m, temps[c])
+            disp = max(disp, r["maxDisplacementMM"] * r["EMPa"] / (E * fE))
+            peak = r["peakStressMechanicalMPa"] + r["peakStressThermalMPa"] * (E * fE * float(m["alpha"])) / (
+                r["EMPa"] * float(m0["alpha"]))
+            sf = min(sf, Y * fY / peak if peak > 0 else float("inf"))
+        else:
+            disp = max(disp, r["maxDisplacementMM"] * m0["E"] / E)
+            sf = min(sf, Y / r["peakStressMPa"] if r["peakStressMPa"] > 0 else float("inf"))
+    row.update({"displacementMM": disp / built.get("lockingFactor", 1.0), "safetyFactor": sf})
+    return row
+
+
 def material_table(prob, built):
     from .materials import all_materials
     m0 = prob.material
     vcm3 = built["volumeCM3"]
     peak = built["peakStressMPa"]
     rows = []
+    if built.get("thermal"):
+        lib = all_materials()
+        for name, m in lib.items():
+            if name == m0.get("name"):
+                continue
+            try:
+                rows.append(_thermal_material_row(prob, built, name, m))
+            except (KeyError, TypeError, ValueError):
+                continue
+        # this run's material (also an inline one): the run's own as-built numbers
+        rows.append({"name": m0.get("name", "this material"), "massG": built["massG"], "current": True,
+                     "displacementMM": built["maxDisplacementMM"], "safetyFactor": built["safetyFactor"]})
+        return sorted(rows, key=lambda r: r["massG"])
     for name, m in all_materials().items():
         try:
             E, Y, rho = float(m["E"]), float(m["yield"]), float(m["density"])
@@ -159,7 +209,7 @@ def material_table(prob, built):
 
 
 def materials_png(prob, built, path):
-    rows = material_table(prob, built)
+    rows = [r for r in material_table(prob, built) if not r.get("note")]
     if not rows:
         return None
     lim_d = prob.limits.get("maxDisplacementMM")
@@ -238,6 +288,8 @@ def insights(prob, built):
         b = min(v["corrected"] for v in built["buckling"].values())
         out.append(f"Buckling: the lowest load factor is {b:.3g}. " + ("Slender members buckle before the "
                    "design load." if b < 1 else "Check thin compressed members." if b < 3 else "Buckling is not critical."))
+    if built.get("thermal"):
+        out += thermal_insights(prob, built)
     rows = material_table(prob, built)
     good = [r for r in rows if (lim_d is None or r["displacementMM"] <= lim_d)
             and r["safetyFactor"] >= max(float(prob.limits.get("minSafetyFactor", 0) or 0), 1)]
@@ -245,6 +297,38 @@ def insights(prob, built):
         out.append(f"Materials: with this geometry, the lightest library material that meets the limits is "
                    f"{good[0]['name']} ({good[0]['massG']:.4g} g). A different material changes the best shape, so "
                    f"re-optimize in that material before you make it.")
+    return out
+
+
+def thermal_insights(prob, built):
+    """Statements for runs with temperature: thermal vs mechanical stress per case, and the hottest case
+    with its margin to the material's service limit."""
+    out = []
+    th = {c: r for c, r in built["cases"].items() if "temperatureC" in r}
+    for c, r in th.items():
+        s = r["thermalStressShare"]
+        out.append(f"Temperature, '{c}' at {r['temperatureC']:g} °C (ΔT {r['deltaTC']:+g} K): thermal stress is "
+                   f"{100 * s:.0f} % of the peak (mechanical {r['peakStressMechanicalMPa']:.3g} MPa, thermal "
+                   f"{r['peakStressThermalMPa']:.3g} MPa). "
+                   + ("The expansion, not the load, decides the strength here: let one joint slide (hold only the "
+                      "bolt-axis direction there) before you add material; more material held at both ends gives "
+                      "more thermal force." if s > 0.5 else
+                      "Thermal stress is a large part of the peak; check how the supports are held." if s > 0.2 else
+                      "The mechanical load decides the strength."))
+    hot = max(th, key=lambda c: th[c]["temperatureC"])
+    t = th[hot]["temperatureC"]
+    lim = prob.material.get("maxServiceTempC")
+    if lim is None:
+        out.append(f"Service temperature: the hottest case is '{hot}' at {t:g} °C. The material has no service limit "
+                   f"(maxServiceTempC), so Anneal cannot say how close that is to softening. Add it from the datasheet.")
+    else:
+        out.append(f"Service temperature: the hottest case is '{hot}' at {t:g} °C, {float(lim) - t:.0f} K below the "
+                   f"material's service limit of {float(lim):g} °C (a short-term value; creep is not modelled)."
+                   + (" The margin is small: stiffness and strength may already fall before the limit."
+                      if float(lim) - t < 15 else ""))
+    if not prob.material.get("tempDerating") and t > 20:
+        out.append("Derating: the material has no tempDerating table, so room-temperature E and yield are used at "
+                   f"{t:g} °C. Real parts are softer and weaker when hot; add a table from the datasheet or a test.")
     return out
 
 

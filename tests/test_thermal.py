@@ -388,6 +388,20 @@ def test_service_row_warns_for_a_warm_polymer_without_derating_and_without_a_lim
     assert share["name"] == "Thermal stress share" and share["warn"] and "slide" in share["fix"]
 
 
+def test_advanced_statements_and_derated_material_comparison(hot_run):
+    rec, html = hot_run
+    text = " ".join(rec["advanced"]["insights"])
+    assert "Temperature, 'main' at 70 °C" in text and "Temperature, 'cold' at -20 °C" in text
+    assert "hottest case is 'main' at 70 °C, 80 K below the material's service limit of 150 °C" in text
+    rows = {r["name"]: r for r in rec["advanced"]["materials"]}
+    cur = rows["test-only-metal"]
+    assert cur["current"] and np.isfinite(cur["safetyFactor"])
+    # derated values: the current material's safety factor is the run's own (each case against its yield)
+    assert cur["safetyFactor"] == pytest.approx(rec["results"]["optimized"]["safetyFactor"], rel=1e-9)
+    assert all(r.get("note") == "no alpha" for n, r in rows.items() if n != "test-only-metal")
+    assert "no alpha" in html
+
+
 # ------------------------------------------------------------------ H7: buckling with thermal pre-stress
 @pytest.mark.parametrize("element", ["e9", "hex8fi"])
 def test_heated_column_held_at_both_ends_buckles_at_the_euler_temperature(element):
