@@ -3,7 +3,7 @@
 | File | For | What it holds |
 |---|---|---|
 | `../CLAUDE.md` | agents (always loaded) | rules, branches, commands, proof, short work list |
-| `PLAN.md` | everyone | goal, current state, release plans (0.4.0, 0.4.1 torque, 0.4.2 temperature), road to 0.5–0.8, external review status, requirements, risks |
+| `PLAN.md` | everyone | goal, current state, release plans (0.4.0, 0.4.1 torque, 0.4.2 temperature, 0.4.3 project files), road to 0.5–0.8, external review status, requirements, risks |
 | `VV-STRATEGY.md` | everyone | how results are proved: code, optimizer, solution and pipeline verification, physical validation, release gates |
 | `IMPROVEMENTS.md` | planning | researched improvements, ranked, with cost, proof and sources |
 | `guides/NEW-PART.md` | operator | how to make a new part: framing, interfaces, design space, load-case checklist, run, read, make, test, record; thermal parts; spec template |

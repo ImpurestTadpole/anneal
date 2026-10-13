@@ -395,6 +395,108 @@ The same proof as 0.4.0 (`CLAUDE.md`, "Proof"), with these changes:
 
 ---
 
+## 4C. Plan for release 0.4.3 — project files and basic app functions
+
+0.4.3 adds the basic functions every desktop engineering program has: a **File** section with new,
+open, import, export, duplicate, rename, delete and templates; project packages that move a whole
+project between computers; and a settings page. No physics changes.
+
+It touches only the GUI, the server, the CLI and a new `anneal/project.py`. It does not touch solver
+files, so it can be built **in parallel with 0.4.2** by the gui-docs agent. Branch `release-0.4.3`
+from tag `v0.4.1`; merge order 0.4.2 → 0.4.3 (or the reverse; there are no shared files except
+`README.md`, `CHANGELOG`, `app.js` text for the temperature fieldset).
+
+### Scope
+
+In scope:
+- A **File** menu in the top bar and a **Projects** page that lists projects with actions.
+- The `.anneal` project package (export and import).
+- Spec import and export (the CLI JSON) from the GUI.
+- Run export (a zip of one run) and a printable report.
+- Templates (a project saved as the start of a part family).
+- Settings page; undo and redo for spec edits; schema version and migration of old projects.
+- The same functions on the command line.
+
+Not in scope: cloud sync, accounts, sharing links, multi-user editing.
+
+### The `.anneal` package (format)
+
+A zip file with this layout:
+
+```
+manifest.json           format "anneal-project", formatVersion 1, anneal version, created (UTC),
+                        project id, solver hash, list of files with size and SHA-256
+project/project.json    project metadata (as in the workspace)
+project/<id>.anneal.json  the spec
+project/gui.json        GUI state
+project/model.<ext>     the original model (STEP/STL/...), and display.stl
+project/check/...       (optional) the last setup check
+runs/<run-id>/...       (optional) runs: run.json, spec.json, outputs, report.html, PNGs, npz fields
+library.json            custom materials and processes that the spec uses (not built-ins)
+```
+
+Rules:
+- Export options: **settings only** (spec + model + GUI), **with the last run**, **with all runs**.
+  Show the size before export.
+- On import, verify every SHA-256 in the manifest. A mismatch stops the import with a message.
+- **Safety (the file can come from anyone):** reject absolute paths and `..` in names (zip slip);
+  extract only the listed files with known extensions (json, stl, step, stp, obj, ply, 3mf, glb,
+  off, npz, npy, png, html, csv, txt); cap the uncompressed size (default 2 GB) and the file count;
+  never execute or import code from the package; treat every text as data.
+- Name clash: if the project id exists, import as `<id>-2` (ask in the GUI: rename or replace).
+- Library entries: add missing custom materials and processes; if a name exists with different
+  values, import the package's version as `<name> (from <project>)` and point the spec at it.
+  Never change a built-in material.
+- `formatVersion` and the spec schema version allow migration; an unknown newer version gives a
+  clear message ("made with Anneal X; update Anneal").
+
+### Work items
+
+| ID | Work | Owner | Acceptance |
+|---|---|---|---|
+| P1 | `anneal/project.py`: `export_project(pid, mode) → path`, `import_project(path) → pid`, manifest, hashing, safety rules, library merge. | gui-docs (new file) | Round trip: export → import gives the same spec, GUI state and model SHA-256; a run re-made from the imported project is bit-identical to the original run. |
+| P2 | Security tests: zip slip, absolute path, unknown extension, oversize, hash mismatch, missing manifest. | gui-docs | Each gives a clear error and writes nothing outside a temporary folder. |
+| P3 | Server routes: `GET /api/projects/<id>/export?mode=`, `POST /api/import` (package or spec JSON or model file — detect by content), `POST /api/projects/<id>/duplicate`, `/rename`, `/delete`. | gui-docs (`server.py`) | Route tests with the test client. |
+| P4 | Delete moves the project folder to `<workspace>/.trash/` (restore from the Projects page; empty after 30 days, setting). Never a hard delete from the GUI. | gui-docs | Delete then restore gives the same project. |
+| P5 | GUI **File** menu: New project (from a model file / from a template / from an example / empty box design space), Open, Import (package, spec JSON, model), Export project, Export spec JSON (for the CLI), Duplicate, Rename, Delete, Recent projects. Keyboard: Ctrl+N, Ctrl+O, Ctrl+S (save now), Ctrl+E (export). Drag and drop a file on the window = Import. | gui-docs (`app.js`, `index.html`) | Smoke test of every item. |
+| P6 | Projects page: search, sort (name, modified, mass), thumbnails (the model or last result, rendered once and cached), the actions of P5 per project. | gui-docs | Smoke test. |
+| P7 | Templates: "Save as template" stores spec + GUI + model (or interfaces only) in `<workspace>/.templates/`; "New from template" asks for a new model or keeps the template model; examples (`examples/*.json`) appear as built-in templates. | gui-docs | New from template, run, result equals a run from the same spec. |
+| P8 | Run export: a zip of one run (outputs, report, run.json, spec); "Print report" opens the report with print CSS (A4/Letter, no 3-D view, page breaks between sections) so the browser can save a PDF. | gui-docs (`server.py`, `report.py` CSS only) | The zip opens; the printed report has every section. |
+| P9 | Replace model: keep anchors that still touch the new model, flag the others in red with "re-pick", warn when the bounding box changes by > 5 %. | gui-docs | Test with a scaled model: anchors flagged. |
+| P10 | Undo / redo for spec edits (Ctrl+Z / Ctrl+Y), 50 steps, per project session. | gui-docs (`app.js`) | Smoke: change three fields, undo three times, spec equals the start. |
+| P11 | Settings page: workspace folder (with move), default material and process, default resolution, threads (`OMP_NUM_THREADS` for runs), theme (light/dark/system), trash retention, units shown (mm only for now; show it). Stored in `<workspace>/settings.json`. | gui-docs | Settings survive a restart. |
+| P12 | Schema version: `project.json` gets `schemaVersion`; `migrate(project)` upgrades 0.2/0.3/0.4 projects (for example 0.4.0 smoothing/upsample, gravity GUI state). | gui-docs (`project.py`) | Fixtures of an old project of each version open and run. |
+| P13 | CLI: `anneal project list | export <id> [--runs none|last|all] | import <file> | duplicate | rename | delete | restore`, and `anneal run <file.anneal>` runs a package directly. | gui-docs (`cli.py` project commands only) | CLI tests. |
+| P14 | README "Projects and files" section; CHANGELOG 0.4.3. | gui-docs | Every menu item and CLI command is documented. |
+| P15 | Owner feedback fixes (bugs only). | by area | Each fix has a test. |
+
+### Order
+
+1. P1, P2 (format and safety first) → P3, P4, P12.
+2. P5, P6, P7, P8, P9, P10, P11 in parallel.
+3. P13, P14, then the proof.
+
+### Proof for 0.4.3
+
+- Gate unchanged and passing; full pytest; goldens unchanged (no solver change: the solver hash
+  must be the same as 0.4.1/0.4.2).
+- Round trip (P1) on the bracket, the interfaces example and the torque example: export with all
+  runs, import on a clean workspace, re-run: bit-identical outputs.
+- Security tests (P2) pass.
+- GUI smoke covers every File menu item, the Projects page, templates, settings, undo/redo.
+- An old 0.3.0 workspace opens and runs (P12).
+
+### Risks
+
+| Risk | What answers it |
+|---|---|
+| A malicious package writes files outside the workspace | P2 rules and tests; extraction into a temporary folder first, then a move |
+| Large packages (runs with fields) | Export modes; the size shown before export |
+| Library name clashes change an existing material | Never overwrite; import as a renamed copy (P1) |
+| Deleted work is lost | Trash folder with restore (P4) |
+
+---
+
 ## 5. After 0.4.0 — the road to the goal
 
 Ordered by value to the goal. Each item lists why it matters.
