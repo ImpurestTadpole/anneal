@@ -283,6 +283,103 @@ CHECKS = [check_rigid_body, check_tension, check_cantilever, check_partial_volum
           check_determinism, check_simp, check_buckling, check_anisotropic, check_impact, check_patch]
 
 
+# ------------------------------------------------------------------ temperature (0.4.2)
+ALPHA = 1e-5
+
+
+def _thermal_solve(g, fixed, dT, element):
+    """Thermal strain only (no mechanical load), E0 everywhere; dT per element or one number. Direct solve,
+    so the closed-form checks see the element and not the iterative solver tolerance."""
+    from scipy.sparse.linalg import spsolve
+    from .physics import thermal_strain
+    fem = FEM(g, np.ones(g.nelem, bool), fixed, NU, element=element)
+    m = thermal_strain(ALPHA)
+    f = fem.thermal_load(fem.thermal_vector(m), E0 * np.asarray(dT, float))
+    K = fem.assemble(np.full(g.nelem, E0))
+    u = fem.expand(spsolve(K.tocsc(), fem.reduce_load(f)))
+    eps0 = (np.asarray(dT, float)[:, None] if np.ndim(dT) else float(dT)) * m
+    return u, fem.stress(u, E0, eps0)
+
+
+def _three_two_one(g, L, W):
+    """Statically determinate supports (3 + 2 + 1 dofs on three corner nodes): rigid motion only, no force."""
+    at = lambda x, y: _nodes_where(g, lambda p: (abs(p[:, 0] - x) < 1e-9) & (abs(p[:, 1] - y) < 1e-9) & (p[:, 2] < 1e-9))[0]
+    a, b, c = at(0, 0), at(L, 0), at(0, W)
+    return [3 * a, 3 * a + 1, 3 * a + 2, 3 * b + 1, 3 * b + 2, 3 * c + 2]
+
+
+def check_thermal_free():
+    """Free bar 20 x 4 x 4 voxels on 3-2-1 supports, uniform dT = 50 K, alpha = 1e-5: the end moves
+    alpha dT L and there is no stress. Measured: e9 end error 5.0e-13, stress 1.2e-12 E alpha dT;
+    hex8fi 2.8e-13 and 5.2e-13. Limits 1e-10 and 1e-9 (round-off of the direct solve)."""
+    dT, L = 50.0, 20
+    worst_u, worst_s = 0.0, 0.0
+    for el in ("e9", "hex8fi"):
+        g = Grid((L, 4, 4), 1.0, (0, 0, 0))
+        u, s = _thermal_solve(g, _three_two_one(g, L, 4), dT, el)
+        end = _nodes_where(g, lambda p: abs(p[:, 0] - L) < 1e-9)
+        worst_u = max(worst_u, abs(u[3 * end].mean() / (ALPHA * dT * L) - 1))
+        worst_s = max(worst_s, float(np.abs(s).max()) / (E0 * ALPHA * dT))
+    return "V12 free bar, uniform dT: end moves alpha dT L, no stress (e9 and hex8fi)", \
+        worst_u < 1e-10 and worst_s < 1e-9, f"end displacement error {worst_u:.1e}, stress {worst_s:.1e} E alpha dT"
+
+
+def check_thermal_held():
+    """The same bar with x held on both end faces (rollers; y and z held only against rigid motion), dT = 50 K:
+    sigma_x = -E alpha dT exactly, sigma_y = sigma_z = 0 (the sides expand freely by (1 + nu) alpha dT).
+    Measured: e9 1.1e-13, hex8fi 2.0e-13 (relative to E alpha dT). Limit 1e-10."""
+    dT, L = 50.0, 20
+    worst = 0.0
+    for el in ("e9", "hex8fi"):
+        g = Grid((L, 4, 4), 1.0, (0, 0, 0))
+        ends = _nodes_where(g, lambda p: (p[:, 0] < 1e-9) | (abs(p[:, 0] - L) < 1e-9))
+        o = _nodes_where(g, lambda p: np.all(np.abs(p) < 1e-9, axis=1))[0]
+        c = _nodes_where(g, lambda p: (p[:, 0] < 1e-9) & (abs(p[:, 1] - 4) < 1e-9) & (p[:, 2] < 1e-9))[0]
+        _, s = _thermal_solve(g, list(3 * ends) + [3 * o + 1, 3 * o + 2, 3 * c + 2], dT, el)
+        ref = E0 * ALPHA * dT
+        worst = max(worst, float(np.abs(s[:, 0] / -ref - 1).max()), float(np.abs(s[:, 1:]).max()) / ref)
+    return "V13 bar held axially, uniform dT: sigma_x = -E alpha dT, sigma_y = sigma_z = 0 (e9 and hex8fi)", \
+        worst < 1e-10, f"stress error {worst:.1e} of E alpha dT"
+
+
+def _gradient_curvature(n, element):
+    """Free beam 40 x 4 x 8 (n layers through the depth of 8) on 3-2-1 supports; dT linear through the depth,
+    0 at the bottom face and 100 K at the top face, sampled at the voxel centres (one dT per voxel). Returns
+    the curvature from a parabola fit to the mid-depth deflection over the middle half, over alpha * 100 / 8."""
+    h = 8.0 / n
+    g = Grid((5 * n, max(n // 2, 1), n), h, (0, 0, 0))
+    dT = 100.0 * g.elem_centers()[:, 2] / 8.0
+    u, _ = _thermal_solve(g, _three_two_one(g, 40.0, g.ny * h), dT, element)
+    mid = _nodes_where(g, lambda p: (abs(p[:, 2] - 4) < 1e-9) & (p[:, 0] > 10 - 1e-9) & (p[:, 0] < 30 + 1e-9))
+    c2 = np.polyfit(g.node_coords(mid)[:, 0], u[3 * mid + 2], 2)[0]
+    return -2 * c2 / (ALPHA * 100.0 / 8.0)
+
+
+def check_thermal_gradient():
+    """Free beam with a linear dT through the depth: curvature kappa = alpha (dT_top - dT_bottom) / depth.
+    A dT that is constant in each layer (sampled at layer centres) has the bending moment of the linear
+    profile times (1 - 1/n^2) (n layers), so beam theory gives kappa (1 - 1/n^2): the O(1/n^2) sampling error.
+    Measured kappa / exact (alpha 1e-5, 0 -> 100 K over 8 mm):
+      layers                      4         8         16
+      e9                       0.937498  0.984375  0.996094   = (1 - 1/n^2) to 2e-6, 1e-7, 1e-7
+      hex8fi                   0.903095  0.975046  0.993710   = (1 - 1/n^2) x 0.9633, 0.9905, 0.9976
+    hex8fi is a little stiff in bending (as in V3); its extra error falls as O(1/n^2) (order 1.95 from 4 to 8).
+    The gate runs 4 and 8 layers (16 layers takes about a minute). Limits: e9 within 1e-5 of (1 - 1/n^2);
+    hex8fi within 4 % at 4 layers and 1.2 % at 8 layers of (1 - 1/n^2), observed order 1.8 to 2.2."""
+    k = {(el, n): _gradient_curvature(n, el) for el in ("e9", "hex8fi") for n in (4, 8)}
+    d = {key: v / (1 - 1 / key[1] ** 2) - 1 for key, v in k.items()}
+    order = float(np.log2(d[("hex8fi", 4)] / d[("hex8fi", 8)])) if d[("hex8fi", 8)] != 0 else 0.0
+    ok = (max(abs(d[("e9", 4)]), abs(d[("e9", 8)])) < 1e-5 and abs(d[("hex8fi", 4)]) < 0.04
+          and abs(d[("hex8fi", 8)]) < 0.012 and 1.8 <= order <= 2.2)
+    return "V14 gradient beam: curvature alpha dT'/depth, sampling error O(1/n^2) (e9 and hex8fi)", ok, \
+        (f"kappa/exact e9 {k[('e9', 4)]:.6f} (4 layers), {k[('e9', 8)]:.6f} (8); hex8fi {k[('hex8fi', 4)]:.4f}, "
+         f"{k[('hex8fi', 8)]:.4f}, order {order:.2f}; e9 vs (1 - 1/n^2) {max(abs(d[('e9', 4)]), abs(d[('e9', 8)])):.1e}")
+
+
+# V11 (torsion, 0.4.1) goes before these when the branches merge
+CHECKS += [check_thermal_free, check_thermal_held, check_thermal_gradient]
+
+
 def run_all(log=print):
     passed = 0
     for fn in CHECKS:

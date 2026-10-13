@@ -41,7 +41,9 @@ or the wrong material values still gives a wrong part (level 5).
 | V9 impact | k = EA/L, F = √(2Ek) | 2 % / 1 % |
 | V10 patch test | Linear field exact (both elements, isotropic and anisotropic) | 1e-10 |
 | V11 torsion | Saint-Venant square bar (planned, 0.4.1) | from measured data |
-| V12–V14 thermal | Free bar, held bar, gradient beam (planned, 0.4.2) | see PLAN 4B |
+| V12 thermal, free bar | Uniform ΔT on a free bar: end moves α·ΔT·L, no stress (e9, hex8fi) | 1e-10 / 1e-9 |
+| V13 thermal, held bar | Bar held axially: σx = −E·α·ΔT, σy = σz = 0 (e9, hex8fi) | 1e-10 |
+| V14 thermal gradient | Free beam, ΔT linear through the depth (one ΔT per voxel): curvature α·ΔT′/depth × (1 − 1/n²) | e9 1e-5; hex8fi 4 % / 1.2 % at 4 / 8 layers, order 1.8–2.2 |
 
 ### 2.2 Gaps and what to add
 
