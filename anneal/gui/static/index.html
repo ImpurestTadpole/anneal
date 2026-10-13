@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Anneal</title>
 <link rel="icon" href="/static/favicon.png">
+<link rel="preload" href="/static/vendor/plex-sans-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/vendor/plex-mono-500.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/style.css">
+<script>/* theme before first paint: saved choice, else the system setting */
+try { const t = localStorage.getItem("anneal.theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -13,42 +18,46 @@
 <body>
 <header class="bar">
   <button class="brand" data-go="home" title="Projects">
-    <img src="/static/anneal-256.png" alt=""><span>Anneal</span>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="0.5" y="0.5" width="23" height="23" fill="#1f3445" stroke="currentColor" stroke-opacity=".25"/>
+      <rect x="4" y="4" width="1.8" height="16" fill="#2bb8ad"/>
+      <path d="M6.4 7 L17 12 M6.4 17 L17 12" stroke="#e8e5dc" stroke-width="2" fill="none"/>
+      <circle cx="6.4" cy="7" r="1.5" fill="#1f3445" stroke="#e8e5dc" stroke-width="1.2"/>
+      <circle cx="6.4" cy="17" r="1.5" fill="#1f3445" stroke="#e8e5dc" stroke-width="1.2"/>
+      <circle cx="17" cy="12" r="2.2" fill="#1f3445" stroke="#e8e5dc" stroke-width="1.4"/>
+      <path d="M17 15.5 V20 M15.4 18.4 L17 20.4 L18.6 18.4" stroke="#ff6a40" stroke-width="1.4" fill="none"/></svg>
+    <span>ANNEAL</span>
   </button>
   <div class="crumb" id="crumb"></div>
   <nav>
     <button data-go="home" id="navHome">Projects</button>
     <button data-go="history" id="navHistory">History</button>
     <button data-go="library" id="navLibrary">Library</button>
+    <button id="themeTool" title="Switch light and dark theme (D)" aria-label="Switch theme">
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="vertical-align:-2px"><rect x="1.5" y="1.5" width="13" height="13" fill="none" stroke="currentColor"/><path d="M2 14 L14 2 V14 Z" fill="currentColor"/></svg></button>
     <button id="quit" title="Stop Anneal on this PC">Quit</button>
   </nav>
 </header>
 
 <main id="workbench" hidden>
-  <aside id="panel" aria-label="Setup"></aside>
+  <div class="notebook">
+    <div class="paneHead"><span><b>Notebook</b> &middot; setup to result</span><span class="mlabel" title="Keys 1 to 6 open a block">1&ndash;6</span></div>
+    <aside id="panel" aria-label="Setup"></aside>
+  </div>
   <section id="stage" aria-label="3D view">
     <div id="viewport"></div>
-    <div class="tools" id="tools">
-      <div class="seg" role="group" aria-label="Colour">
-        <button data-view="shape" class="on">Shape</button>
-        <button data-view="disp">Displacement</button>
-        <button data-view="stress">Stress</button>
-        <button data-view="print" title="Faces that need support for the build direction">Printability</button>
-      </div>
-      <label class="tool" id="deformTool">Deformed
-        <input type="range" id="deform" min="0" max="2" step="0.05" value="0">
-      </label>
-      <label class="tool" id="caseTool">Load case <select id="caseSel"></select></label>
-      <label class="tool" id="ghostTool"><input type="checkbox" id="ghost"> Original</label>
-      <span class="grow"></span>
-      <button class="tool" id="panTool" aria-pressed="false" title="Left drag moves the view instead of turning it. Right drag, Shift + drag and the arrow keys also move it.">Move</button>
-      <div class="seg cams" role="group" aria-label="Camera">
-        <button data-cam="fit" title="Fit the part in view">Fit</button>
-        <button data-cam="iso">Iso</button>
-        <button data-cam="front">Front</button>
-        <button data-cam="top">Top</button>
-        <button data-cam="right">Right</button>
-        <button data-cam="under" title="Look up from under the build plate">Under</button>
+    <div class="viewcube" id="viewcube" aria-label="View cube">
+      <div class="vcScene"><div class="vcBox" id="vcBox">
+        <button data-cam="top" data-face="+z" title="Top view (T)">TOP</button>
+        <button data-cam="bottom" data-face="-z" title="Bottom view">BOTTOM</button>
+        <button data-cam="front" data-face="-y" title="Front view (V)">FRONT</button>
+        <button data-cam="back" data-face="+y" title="Back view">BACK</button>
+        <button data-cam="right" data-face="+x" title="Right view (R)">RIGHT</button>
+        <button data-cam="left" data-face="-x" title="Left view">LEFT</button>
+      </div></div>
+      <div class="vcBtns">
+        <button data-cam="iso" title="Iso view (I)">ISO</button>
+        <button data-cam="fit" title="Fit the part in view (F)">FIT</button>
+        <button id="orthoTool" aria-pressed="false" title="Orthographic or perspective camera (O)">ORTHO</button>
       </div>
     </div>
     <div class="hint" id="hint" hidden></div>
@@ -58,8 +67,51 @@
       <div class="lbar"></div>
       <div class="lv"><span id="legendMin"></span><span id="legendMax"></span></div>
     </div>
-    <div class="status" id="status"></div>
   </section>
+  <aside id="inspector" aria-label="Display">
+    <div class="paneHead"><span><b>Display</b></span><button class="icon" id="inspClose" title="Hide this panel (P)">Hide</button></div>
+    <div class="tools" id="tools">
+      <div class="insp">
+        <span class="mlabel">Colour by</span>
+        <div class="seg" role="group" aria-label="Colour">
+          <button data-view="shape" class="on">Shape</button>
+          <button data-view="disp">Displacement</button>
+          <button data-view="stress">Stress</button>
+          <button data-view="print" title="Faces that need support for the build direction">Printability</button>
+        </div>
+      </div>
+      <div class="insp">
+        <span class="mlabel">Shape</span>
+        <label class="tool" id="deformTool">Deformed
+          <input type="range" id="deform" min="0" max="2" step="0.05" value="0">
+        </label>
+        <label class="tool" id="caseTool">Load case <select id="caseSel"></select></label>
+        <label class="tool" id="ghostTool"><span>Original</span><input type="checkbox" id="ghost"></label>
+      </div>
+      <div class="insp">
+        <span class="mlabel">Camera</span>
+        <div class="seg cams" role="group" aria-label="Camera">
+          <button data-cam="fit" title="Fit the part in view">Fit</button>
+          <button data-cam="iso">Iso</button>
+          <button data-cam="front">Front</button>
+          <button data-cam="top">Top</button>
+          <button data-cam="right">Right</button>
+          <button data-cam="under" title="Look up from under the build plate">Under</button>
+        </div>
+        <span class="grow"></span>
+        <button class="tool" id="panTool" aria-pressed="false" title="Left drag moves the view instead of turning it. Right drag, Shift + drag and the arrow keys also move it.">Move</button>
+      </div>
+      <div class="insp">
+        <span class="mlabel">Regions</span>
+        <div class="legendKey">
+          <i style="background:var(--hold)"></i><span>Support (held)</span>
+          <i style="background:var(--push)"></i><span>Load</span>
+          <i style="background:var(--void)"></i><span>Keep empty</span>
+          <i style="background:var(--solid)"></i><span>Keep as is</span>
+        </div>
+      </div>
+    </div>
+  </aside>
 </main>
 
 <section id="home" class="page" hidden>
@@ -139,7 +191,23 @@ Inconel 718,200,0.29,8.19,1034,,LPBF,0.4,</pre>
   </div>
 </section>
 
+<footer class="statusline" id="statusline">
+  <span class="state" id="sysState">READY</span>
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+  <span class="meter" id="meter" hidden><span id="meterText"></span><span class="bar2"><i id="meterBar"></i></span></span>
+  <span class="keys" id="keys">
+    <button data-key="f" title="Fit the part in view"><kbd>F</kbd><span class="kl">Fit</span></button>
+    <button data-key="i" title="Iso view"><kbd>I</kbd><span class="kl">Iso</span></button>
+    <button data-key="o" title="Orthographic or perspective"><kbd>O</kbd><span class="kl">Ortho</span></button>
+    <button data-key="m" title="Left drag moves the view"><kbd>M</kbd><span class="kl">Move</span></button>
+    <button data-key="p" title="Show or hide the display panel"><kbd>P</kbd><span class="kl">Panel</span></button>
+    <button data-key="d" title="Light or dark theme"><kbd>D</kbd><span class="kl">Theme</span></button>
+  </span>
+  <span class="ver" id="ver">ANNEAL</span>
+</footer>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="/static/app.js"></script>
+<script type="module" src="/static/ui.js"></script>
 </body>
 </html>
