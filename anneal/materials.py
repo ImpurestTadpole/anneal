@@ -29,6 +29,16 @@ MATERIALS = {
                       "note": "PLA, FDM. Layer (Z) strength often under half of this"},
     "PETG-FDM":      {"E": 2000.0,   "nu": 0.38, "density": 1.27, "yield": 45.0,  "minWallMM": 1.0, "process": "FDM",
                       "note": "PETG, FDM. Layer (Z) strength lower than in-plane"},
+    # Wrought aluminium for machining: typical values (not design allowables; MMPDS A/B-basis values are lower)
+    "Al6061-T6":     {"E": 68900.0,  "nu": 0.33, "density": 2.70, "yield": 276.0, "minWallMM": 0.8, "process": "CNC-3axis",
+                      "note": "6061-T6 wrought aluminium, machined from plate or bar. Typical values; design allowables are lower",
+                      "source": "ASM Aerospace Specification Metals, Aluminum 6061-T6 data sheet, "
+                                "https://asm.matweb.com/search/SpecificMaterial.asp?bassnum=MA6061T6"},
+    "Al7075-T6":     {"E": 71700.0,  "nu": 0.33, "density": 2.81, "yield": 503.0, "minWallMM": 0.8, "process": "CNC-3axis",
+                      "note": "7075-T6 wrought aluminium, machined from plate or bar. High strength; poor weldability; "
+                              "check stress-corrosion in the short transverse direction. Typical values; design allowables are lower",
+                      "source": "ASM Aerospace Specification Metals, Aluminum 7075-T6 data sheet, "
+                                "https://asm.matweb.com/search/SpecificMaterial.asp?bassnum=MA7075T6"},
 }
 
 # maxOverhangDeg: steepest overhang printed without support, measured from vertical
