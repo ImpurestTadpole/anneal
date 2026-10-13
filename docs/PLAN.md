@@ -308,7 +308,7 @@ The largest risk is a correct part for the wrong load case. Anneal must help der
 ### Later
 
 - PicoGK backend for geometry (Windows and macOS arm64 only).
-- Thermal (steady conduction) when a part needs it.
+- Thermal loads: derating, thermal stress, conduction, then thermal optimization. Plan and research in `docs/research/thermal-loads.md` (stages T0–T4; T0+T1 first).
 - Principal-stress streamlines in the viewer (explain where the material went).
 
 ---
