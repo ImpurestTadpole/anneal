@@ -344,6 +344,50 @@ def test_report_shows_temperature_assumptions_and_limits(hot_run):
     assert "temperature 70 °C" in text and "from the thermal load" in text
 
 
+def test_thermal_check_rows_appear_and_held_supports_warn(hot_run):
+    rec, html = hot_run
+    names = {c["name"]: c for c in rec["checks"]}
+    svc = names["Service temperature vs material limit"]
+    assert svc["ok"] and "main 70 °C (margin 80 K)" in svc["value"] and not svc["warn"]
+    assert "Thermal stress share" in names and "cold 100 %" in names["Thermal stress share"]["value"]
+    held = names["Held supports and thermal expansion"]
+    assert held["warn"] and "wall, wall-2" in held["value"] and "bolt-axis direction" in held["fix"]
+    assert "thermal expansion" in names[next(n for n in names if n.startswith("Maximum displacement"))]["value"]
+
+
+def _fake_built(temps, share=0.2):
+    cases = {c: {"temperatureC": t, "deltaTC": t - 20, "thermalStressShare": share} for c, t in temps.items()}
+    return {"thermal": {"cases": cases}, "cases": cases}
+
+
+def test_held_supports_warning_only_with_two_fully_held_anchors():
+    from anneal.run import thermal_checks
+    p = _prob(thermal={"cases": {"main": 70}})
+    names = [r["name"] for r in thermal_checks(p, _fake_built({"main": 70}), [])]
+    assert "Held supports and thermal expansion" not in names          # one fixed anchor only
+    s = _bar_spec(thermal={"cases": {"main": 70}})
+    s["anchors"].append({"name": "end2", "role": "fixed", "dofs": "xyz",
+                         "region": {"type": "box", "min": [19.1, -1, -1], "max": [20.9, 11, 0.9]}})
+    p2 = Problem(spec=s, log=lambda *a: None)
+    assert "Held supports and thermal expansion" in [r["name"] for r in thermal_checks(p2, _fake_built({"main": 70}), [])]
+    s["anchors"][-1]["dofs"] = "z"                                     # the joint can slide in x and y
+    p3 = Problem(spec=s, log=lambda *a: None)
+    assert "Held supports and thermal expansion" not in [r["name"] for r in thermal_checks(p3, _fake_built({"main": 70}), [])]
+
+
+def test_service_row_warns_for_a_warm_polymer_without_derating_and_without_a_limit():
+    from anneal.run import thermal_checks
+    # TEST-ONLY polymer-like values (not real data)
+    poly = {"E": 3000.0, "nu": 0.35, "density": 1.2, "yield": 50.0, "alpha": 7e-5, "maxServiceTempC": 55.0}
+    row = thermal_checks(_prob(material=poly, thermal={"cases": {"main": 40}}), _fake_built({"main": 40}), [])[0]
+    assert row["ok"] and row["warn"] and "room-temperature E and yield are used up to 40 °C" in row["fix"]
+    nolim = {k: v for k, v in poly.items() if k != "maxServiceTempC"}
+    row = thermal_checks(_prob(material=nolim, thermal={"cases": {"main": 15}}), _fake_built({"main": 15}), [])[0]
+    assert row["warn"] and "no maxServiceTempC" in row["fix"] and row["limit"] == "no limit in the material"
+    share = thermal_checks(_prob(thermal={"cases": {"main": 70}}), _fake_built({"main": 70}, 0.8), [])[1]
+    assert share["name"] == "Thermal stress share" and share["warn"] and "slide" in share["fix"]
+
+
 # ------------------------------------------------------------------ H7: buckling with thermal pre-stress
 @pytest.mark.parametrize("element", ["e9", "hex8fi"])
 def test_heated_column_held_at_both_ends_buckles_at_the_euler_temperature(element):

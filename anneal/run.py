@@ -464,6 +464,8 @@ def checks(prob, built, thick):
             for c, r in nl["cases"].items():
                 big = abs(r["ratio"] - 1) > 0.10 if np.isfinite(r["ratio"]) else True
                 lim_d = lim.get("maxDisplacementMM")
+                if c in getattr(prob, "t_case", {}) and not getattr(prob, "disp_incl_thermal", False):
+                    lim_d = None   # CalculiX gives the total displacement; the limit checks the mechanical one
                 ok = np.isfinite(r["nonlinear"]) and (lim_d is None or r["nonlinear"] <= lim_d)
                 out.append({"name": f"Large deformation, load case {c} (CalculiX NLGEOM)", "ok": bool(ok), "warn": bool(big),
                             "value": f"{r['nonlinear']:.4g} mm nonlinear vs {r['linear']:.4g} mm linear (ratio {r['ratio']:.3f})",
@@ -487,6 +489,68 @@ def checks(prob, built, thick):
         out.append({"name": "Thinnest member vs process minimum wall", "ok": ok,
                     "value": f"{tmin:.2f} mm (2nd percentile)", "limit": f"≥ {minwall} mm",
                     "fix": "" if ok else f"Set optimizer.minMemberMM to at least {2 * minwall} mm."})
+    if built.get("thermal"):
+        out += thermal_checks(prob, built, out)
+    return out
+
+
+POLYMER_E_MPA = 10000.0     # below this E a material is treated as a polymer (softens well below its limit)
+
+
+def thermal_checks(prob, built, rows):
+    """Check rows for temperature cases (0.4.2). Also adds the thermal displacement to the displacement row
+    and the thermal share to the fix of a failed safety-factor row."""
+    th = built["thermal"]
+    cases = {c: built["cases"][c] for c in th["cases"]}
+    mat = prob.material
+    out = []
+    for r in rows:
+        if r["name"].startswith("Maximum displacement") and "thermalDisplacementMM" in built:
+            r["value"] += (f"; thermal expansion {built['thermalDisplacementMM']:.4g} mm "
+                           + ("included" if prob.disp_incl_thermal else "not in the limit"))
+        if r["name"].startswith("Safety factor on yield") and not r["ok"]:
+            top = max(cases, key=lambda c: cases[c]["thermalStressShare"])
+            if cases[top]["thermalStressShare"] > 0.3:
+                r["fix"] += (f" Thermal stress is {100 * cases[top]['thermalStressShare']:.0f} % of the peak in '{top}' "
+                             f"(the optimizer used the mechanical loads only): make a joint able to slide (hold only "
+                             f"the bolt-axis direction there) or raise volumeFraction.")
+    # 1. service temperature
+    lim = mat.get("maxServiceTempC")
+    hot = max(c["temperatureC"] for c in cases.values())
+    polymer = mat["E"] < POLYMER_E_MPA or str(mat.get("process", "")).upper() in ("FDM", "SLS")
+    table = bool(mat.get("tempDerating"))
+    warn, fix = False, ""
+    if lim is None:
+        warn, fix = True, (f"Material '{mat.get('name', '')}' has no maxServiceTempC, so Anneal cannot check the case "
+                           f"temperatures. Add the service limit (°C) from the datasheet (for polymers: HDT at 1.8 MPa).")
+    if polymer and not table and hot > 20.0:
+        warn = True
+        fix = (fix + " " if fix else "") + (
+            f"No tempDerating table: room-temperature E and yield are used up to {hot:g} °C. A polymer is softer and "
+            f"weaker when warm; add a tempDerating table from the datasheet or a test.")
+    ok = lim is None or hot <= float(lim)
+    out.append({"name": "Service temperature vs material limit", "ok": ok, "warn": warn and ok,
+                "value": ", ".join(f"{c} {r['temperatureC']:g} °C" + (f" (margin {float(lim) - r['temperatureC']:.0f} K)"
+                                                                     if lim is not None else "")
+                                   for c, r in cases.items()),
+                "limit": f"≤ {float(lim):g} °C (maxServiceTempC)" if lim is not None else "no limit in the material",
+                "fix": fix})
+    # 2. thermal stress share
+    share = {c: r["thermalStressShare"] for c, r in cases.items()}
+    big = max(share.values()) > 0.5
+    out.append({"name": "Thermal stress share", "ok": True, "warn": bool(big),
+                "value": ", ".join(f"{c} {100 * s:.0f} %" for c, s in share.items()) + " of the peak stress",
+                "limit": "information (warning above 50 %)",
+                "fix": "" if not big else "The expansion, not the load, sets the peak stress. The optimizer used the "
+                                          "mechanical loads only. Let one joint slide (hold only the bolt-axis direction) "
+                                          "before you add material: material held at both ends carries more thermal force."})
+    # 3. supports that hold every direction at two or more anchors
+    held = [a.name for a in prob.anchors if a.role == "fixed" and sorted(a.dofs) == [0, 1, 2]]
+    if len(held) >= 2 and any(r["deltaTC"] != 0 for r in cases.values()):
+        out.append({"name": "Held supports and thermal expansion", "ok": True, "warn": True,
+                    "value": f"{', '.join(held)} hold x, y and z", "limit": "–",
+                    "fix": "Held supports overestimate thermal stress: a real bolted joint slides a little. Hold only the "
+                           "bolt-axis direction (anchor dofs) at the anchors where the joint can slide, and compare."})
     return out
 
 
