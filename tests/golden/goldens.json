@@ -13,6 +13,15 @@
    "safetyFactor": 3.633856479013415,
    "iterations": 40,
    "amgBuilds": 11
+  },
+  "../../examples/thermal-bracket.json": {
+   "massG": 32.30086668319519,
+   "maxDisplacementMM": 0.14233327736070303,
+   "safetyFactor": 4.487768729377714,
+   "thermalDisplacementMM": 0.06381776678726966,
+   "mechanicalDisplacementMM": 0.12368761802645094,
+   "iterations": 40,
+   "amgBuilds": 14
   }
  },
  "e9": {
@@ -29,6 +38,15 @@
    "safetyFactor": 3.5467971771529947,
    "iterations": 40,
    "amgBuilds": 11
+  },
+  "../../examples/thermal-bracket.json": {
+   "massG": 32.20966668319518,
+   "maxDisplacementMM": 0.12646373471109826,
+   "safetyFactor": 4.553351563322018,
+   "thermalDisplacementMM": 0.06377908526743399,
+   "mechanicalDisplacementMM": 0.12469324242514288,
+   "iterations": 40,
+   "amgBuilds": 14
   }
  }
 }

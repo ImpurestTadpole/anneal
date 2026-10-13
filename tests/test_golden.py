@@ -16,11 +16,14 @@ slow = pytest.mark.skipif(os.environ.get("ANNEAL_GOLDEN") != "1", reason="set AN
 
 @slow
 @pytest.mark.parametrize("element", sorted(GOLD))
-@pytest.mark.parametrize("name", ["cantilever.anneal.json", "plate_hole.anneal.json"])
+@pytest.mark.parametrize("name", ["cantilever.anneal.json", "plate_hole.anneal.json",
+                                  "../../examples/thermal-bracket.json"])
 def test_golden(element, name):
     from make_goldens import measure
     got = measure(name, element)
     want = GOLD[element][name]
-    for k in ("massG", "maxDisplacementMM", "safetyFactor"):
+    for k in ("massG", "maxDisplacementMM", "safetyFactor", "thermalDisplacementMM", "mechanicalDisplacementMM"):
+        if k not in want:
+            continue
         assert got[k] == pytest.approx(want[k], rel=1e-6), k
     assert got["iterations"] == want["iterations"]

@@ -1,0 +1,28 @@
+{
+  "name": "thermal-bracket",
+  "designSpace": { "type": "box", "min": [0, 0, 0], "max": [80, 40, 12] },
+  "material": {
+    "name": "6061-T6 (inline, alpha unconfirmed)",
+    "E": 68900, "nu": 0.33, "density": 2.70, "yield": 276,
+    "alpha": 2.36e-5,
+    "source": "E, nu, density, yield: ASM Aerospace Specification Metals, Aluminum 6061-T6 data sheet, https://asm.matweb.com/search/SpecificMaterial.asp?bassnum=MA6061T6. alpha 23.6e-6 1/K (20-100 °C): same data sheet, from docs/research/thermal-material-data.md; not yet opened on the source page.",
+    "note": "alpha unconfirmed: check it on the data sheet before you use this part. No service limit and no derating table: room-temperature E and yield are used at 60 °C and -20 °C. The data sheet range is 20-100 °C; -20 °C is outside it."
+  },
+  "process": "none",
+  "resolution": { "voxelMM": 2.0 },
+  "anchors": [
+    { "name": "bolt-1", "role": "fixed", "dofs": "xyz", "freezeMM": 3,
+      "region": { "type": "pipe", "from": [10, 10, -1], "to": [10, 10, 13], "r": 4.0, "rIn": 2.0 }, "hole": true },
+    { "name": "bolt-2", "role": "fixed", "dofs": "xyz", "freezeMM": 3,
+      "region": { "type": "pipe", "from": [10, 30, -1], "to": [10, 30, 13], "r": 4.0, "rIn": 2.0 }, "hole": true },
+    { "name": "load-pin", "role": "load", "freezeMM": 3,
+      "region": { "type": "pipe", "from": [70, 20, -1], "to": [70, 20, 13], "r": 5.0, "rIn": 3.0 }, "hole": true,
+      "loads": { "main": [0, -1500, -300] } }
+  ],
+  "thermal": { "referenceTempC": 20, "cases": { "main": 60, "coldStart": -20 } },
+  "objective": { "volumeFraction": 0.35 },
+  "optimizer": { "iterations": 40 },
+  "physics": { "buckling": true },
+  "limits": { "maxDisplacementMM": 0.3, "minSafetyFactor": 1.5 },
+  "output": { "advanced": true, "formats": ["stl"] }
+}
