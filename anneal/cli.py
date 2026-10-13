@@ -5,6 +5,8 @@
   run SPEC               optimize, re-solve the result, check it, write the report
   validate               solver validation gate (10 checks)
   drop PATH              for drag-and-drop: a model gives init, a spec gives run
+  gui | app              the graphical interface in the browser | in its own window
+  doctor                 start-up check: Python, packages, desktop window, log files
 """
 import argparse
 import json
@@ -183,7 +185,28 @@ def cmd_run(spec, out=None, open_report=False):
     return 0 if all(c["ok"] for c in record["checks"]) else 2
 
 
+GUI_COMMANDS = ("gui", "app", "shortcut", "doctor")
+
+
 def main(argv=None):
+    """Entry point. For the GUI commands an unexpected error goes to the start-up log
+    (~/Anneal Projects/anneal-startup.log) and to a message box (Windows) or the console, because the
+    desktop icon starts Anneal with pythonw, which has no console to show a traceback."""
+    words = list(sys.argv[1:] if argv is None else argv)
+    cmd = next((w for w in words if not w.startswith("-")), "")
+    if cmd not in GUI_COMMANDS:
+        return _main(argv)
+    try:
+        return _main(argv)
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException as e:
+        from .gui.desktop import report_startup_error
+        report_startup_error(e, f"Anneal could not start ({cmd})", force_box=(cmd == "app"))
+        return 1
+
+
+def _main(argv=None):
     p = argparse.ArgumentParser(prog="anneal", description="Topology optimization of existing parts on a voxel grid.")
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("inspect", help="report sizes and write a coordinate preview")
@@ -206,6 +229,7 @@ def main(argv=None):
     a.add_argument("--workspace")
     a.add_argument("--port", type=int, default=8765)
     sub.add_parser("shortcut", help="add Anneal to the desktop and Start menu")
+    sub.add_parser("doctor", help="start-up check: Python, packages, desktop window, log files")
     a = sub.add_parser("history", help="list past runs from the history database")
     a.add_argument("--project")
     a.add_argument("--limit", type=int, default=30)
@@ -227,9 +251,19 @@ def main(argv=None):
         except Exception:
             pass
 
-    from .problem import SpecError
-    from .geometry import ModelError
-    from .fem import SolverError
+    try:
+        from .problem import SpecError
+        from .geometry import ModelError
+        from .fem import SolverError
+    except Exception:
+        if args.cmd not in GUI_COMMANDS + ("history", "materials"):
+            raise
+        # The solver stack (scipy, pyamg, trimesh...) is broken. The window can still open, so the
+        # person sees the problem; runs will report the import error.
+        from .gui.desktop import log_startup
+        import traceback
+        log_startup("The solver could not be loaded. The window opens, but runs will fail.\n" + traceback.format_exc())
+        SpecError = ModelError = SolverError = type("Unavailable", (Exception,), {})
     try:
         if args.cmd == "inspect":
             cmd_inspect(args.model, args.out)
@@ -246,6 +280,9 @@ def main(argv=None):
         elif args.cmd == "shortcut":
             from .gui.desktop import shortcut
             return shortcut()
+        elif args.cmd == "doctor":
+            from .gui.desktop import doctor
+            return doctor()
         elif args.cmd == "history":
             from . import db
             from .gui.server import default_workspace
@@ -282,6 +319,8 @@ def main(argv=None):
             print(f"Drop a model ({', '.join(MODEL_EXT)}) or a spec (.json), not {path}")
             return 1
     except (SpecError, ModelError, SolverError, ValueError, FileNotFoundError, RuntimeError, OSError) as e:
+        if args.cmd in GUI_COMMANDS:   # no console under pythonw: log it and show it
+            raise
         print(f"\nERROR: {e}", file=sys.stderr)
         return 1
     return 0
