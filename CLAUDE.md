@@ -105,6 +105,9 @@ GUI and docs
 0.4.2 (after v0.4.1; plan in docs/PLAN.md section 4B)
 - [ ] Temperature: material derating and service limit, uniform thermal strain per load case in the as-built check, gate V12–V14, CalculiX thermal cross-check, GUI, README.
 
+0.4.3 (project files and basic app functions; plan in docs/PLAN.md section 4C; can run in parallel with 0.4.2)
+- [ ] File menu, .anneal project packages (export/import with hashes and zip-safety), duplicate/rename/delete-to-trash, templates, run export, printable report, undo/redo, settings page, schema migration, CLI project commands.
+
 Later
 - [ ] Bolt preload load case (DeepSeek plan 6.3).
 - [ ] Release: merge release-0.4 → master after the proof, tag v0.4.0, build the zip.
