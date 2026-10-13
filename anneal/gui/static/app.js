@@ -93,8 +93,8 @@ function vecFor(meta, c) {
 }
 function derived(meta, role) {
   // region for keep-out / keep-solid built from the picked feature and its parameters
+  if (meta.custom || !meta.base) return meta.region;   // typed region (no picked feature)
   const r = clone(meta.base.region), p = meta.p || {};
-  if (meta.custom) return meta.region;
   const V = (a, b, s) => a.map((x, i) => x + s * b[i]);
   if (r.type === "pipe") {
     const R = meta.base.radius ?? (r.r + r.rIn) / 2;
