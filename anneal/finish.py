@@ -129,6 +129,7 @@ def finish(prob, surf, log=print):
             big = max(parts, key=lambda m: m.volume)
             out = big
             info["droppedPieces"] = len(parts) - 1
+            log(f"  exact features: {len(parts) - 1} separate piece(s) removed; only the largest piece is kept")
         log(f"  exact features: kept {len(info['kept'])} region(s) of the original model"
             f" ({info.get('keptCM3', info.get('keptModelCM3', 0)):.2f} cm3), cut {len(info['cut'])} keep-out(s)"
             f" ({info.get('cutCM3', 0):.2f} cm3)")

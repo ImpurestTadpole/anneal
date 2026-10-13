@@ -153,7 +153,7 @@ def test_taskbar_icon_hooks(monkeypatch):
     class Form:
         Icon = None
 
-        def Invoke(self, action):
+        def BeginInvoke(self, action):          # S2: the icon is set without blocking the UI thread
             action()
     System = types.ModuleType("System")
     System.Action = lambda f: f
