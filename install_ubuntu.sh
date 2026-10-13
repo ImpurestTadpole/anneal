@@ -18,13 +18,19 @@ uv python install 3.11
 uv venv --python 3.11 .venv
 # shellcheck disable=SC1091
 source .venv/bin/activate
+# Required packages (numpy, scipy, pyamg, trimesh, scikit-image, matplotlib, manifold3d) must install.
 uv pip install -e .
+python -c "import numpy, scipy, pyamg, trimesh, skimage, matplotlib, manifold3d"
+# Optional packages: a failure does not stop the install or Anneal.
 uv pip install cadquery-ocp || echo "STEP support not installed (no wheel for this system). Export STL from CAD instead."
+uv pip install gmsh || echo "gmsh not installed. The CalculiX large-deformation check is skipped."
 
 python -m anneal shortcut || true
 
 echo
-python -m anneal validate
+python -m anneal doctor || true
+echo
+python -m anneal validate || echo "The validation gate did not pass. Anneal still starts; report this result."
 echo
 echo "Installed. Use:"
 echo "  source $(pwd)/.venv/bin/activate"

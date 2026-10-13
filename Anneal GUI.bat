@@ -8,4 +8,10 @@ if not exist "%HERE%.venv\Scripts\python.exe" (
   pause & exit /b 1
 )
 "%HERE%.venv\Scripts\python.exe" -m anneal app
-if errorlevel 1 pause
+if errorlevel 1 (
+  echo.
+  echo Anneal stopped with an error. The report is in:
+  echo   %USERPROFILE%\Anneal Projects\anneal-startup.log
+  echo To check the installation, run:  "%HERE%.venv\Scripts\python.exe" -m anneal doctor
+  pause
+)
