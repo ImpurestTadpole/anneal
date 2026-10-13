@@ -39,6 +39,16 @@ def open_in_page(pg, pid, step=None):
         pg.wait_for_timeout(300)
 
 
+def wait_project(pid, ok, timeout=8.0):
+    """Poll the saved project until ok(project) is true (the app saves after a short delay)."""
+    t = time.time()
+    while True:
+        p = get_project(pid)
+        if ok(p) or time.time() - t > timeout:
+            return p
+        time.sleep(0.2)
+
+
 def torque_checks(pg, pid, stl):
     """0.4.1 torque load (PLAN 4A, T9): torque rows, maxRotationDeg, save and reload, old projects."""
     open_in_page(pg, pid, step=1)
@@ -49,16 +59,15 @@ def torque_checks(pg, pid, stl):
     check("no torques key before a torque is set", "torques" not in get_project(pid)["spec"]["anchors"][i])
     mz = pg.locator(f'input[data-torque="{i}.down.2"]')
     mz.fill("12.5"); mz.dispatch_event("change")
-    pg.wait_for_timeout(1000)
-    a = get_project(pid)["spec"]["anchors"][i]
+    a = wait_project(pid, lambda p: p["spec"]["anchors"][i].get("torques"))["spec"]["anchors"][i]
     check("a torque goes into the spec as torques (N·m)", a.get("torques") == {"down": [0, 0, 12.5]}, json.dumps(a.get("torques")))
     pg.locator(".stepHead").nth(2).click()
     pg.wait_for_timeout(300)
     mr = pg.locator('input[data-bind="limits.maxRotationDeg"]')
     check("goal step shows limits.maxRotationDeg", mr.count() == 1)
     mr.fill("1.5"); mr.dispatch_event("change")
-    pg.wait_for_timeout(1000)
-    check("maxRotationDeg saved", get_project(pid)["spec"]["limits"].get("maxRotationDeg") == 1.5)
+    lim = wait_project(pid, lambda p: p["spec"]["limits"].get("maxRotationDeg") is not None)["spec"]["limits"]
+    check("maxRotationDeg saved", lim.get("maxRotationDeg") == 1.5, json.dumps(lim))
     open_in_page(pg, pid, step=1)                     # reload the page and open the project again
     a = get_project(pid)["spec"]["anchors"][i]
     v = pg.locator(f'input[data-torque="{i}.down.2"]').input_value()
