@@ -5,7 +5,7 @@ checks pass. Re-run it after any change to fem.py or optimize.py.
 """
 import hashlib
 import numpy as np
-from .fem import Grid, FEM, hex8_matrices
+from .fem import Grid, FEM, hex8_matrices, DEFAULT_ELEMENT, LOCAL
 
 E0, NU = 1000.0, 0.3
 
@@ -36,16 +36,23 @@ def _nodes_where(grid, fn):
 
 
 def check_rigid_body():
-    ke, _, _ = hex8_matrices(NU, 1.0)
-    xyz = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-                    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
-    t = np.tile([1.0, 0, 0], 8)
-    r = np.stack([-xyz[:, 1], xyz[:, 0], np.zeros(8)], axis=1).ravel()
-    et, er = float(t @ ke @ t), float(r @ ke @ r)
-    return "V1 rigid body stores no energy", max(abs(et), abs(er)) < 1e-10, f"translation {et:.2e}, rotation {er:.2e}"
+    """Both elements: translations and rotations store no energy, and exactly six zero modes."""
+    xyz = LOCAL.astype(float)
+    worst, nz = 0.0, []
+    for el in ("e9", "hex8fi"):
+        ke, _, _ = hex8_matrices(NU, 1.0, element=el)
+        modes = [np.tile(t, 8) for t in np.eye(3)]
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            r = np.zeros((8, 3))
+            r[:, a], r[:, b] = -xyz[:, b], xyz[:, a]
+            modes.append(r.ravel())
+        worst = max(worst, max(abs(float(m @ ke @ m)) for m in modes))
+        nz.append(int((np.abs(np.linalg.eigvalsh(ke)) < 1e-10).sum()))
+    return "V1 rigid body stores no energy (e9 and hex8fi)", worst < 1e-10 and nz == [6, 6], \
+        f"largest energy {worst:.1e}, zero modes {nz[0]} and {nz[1]}"
 
 
-def _tension(fill_layer=None, nz=4, L=10, ny=2, h=1.0, F=100.0):
+def _tension(fill_layer=None, nz=4, L=10, ny=2, h=1.0, F=100.0, element=DEFAULT_ELEMENT):
     g, e, i, j, k, fill = _bar(L, ny, nz, h)
     if fill_layer is not None:
         fill = np.where(k == nz - 1, fill_layer, 1.0)
@@ -55,7 +62,7 @@ def _tension(fill_layer=None, nz=4, L=10, ny=2, h=1.0, F=100.0):
     n0 = _nodes_where(g, lambda p: (p[:, 0] < 1e-9) & (p[:, 1] < 1e-9) & (p[:, 2] < 1e-9))[0]
     n1 = _nodes_where(g, lambda p: (p[:, 0] < 1e-9) & (abs(p[:, 1] - ny * h) < 1e-9) & (p[:, 2] < 1e-9))[0]
     fixed += [3 * n0 + 1, 3 * n0 + 2, 3 * n1 + 2]
-    fem = FEM(g, np.ones(g.nelem, bool), fixed, NU)
+    fem = FEM(g, np.ones(g.nelem, bool), fixed, NU, element=element)
     end = e[i == L - 1]
     Fg = _face_load(g, end, fill[end], F, 0, [1, 2, 5, 6])
     K = fem.assemble(E0 * fill)
@@ -65,37 +72,49 @@ def _tension(fill_layer=None, nz=4, L=10, ny=2, h=1.0, F=100.0):
 
 
 def check_tension():
-    ux, g = _tension()
     A = 2 * 4 * 1.0
     exact = 100.0 * 10 / (A * E0)
-    err = abs(ux - exact) / exact
-    return "V2 uniform tension = FL/(AE)", err < 1e-8, f"relative error {err:.2e}"
+    err = max(abs(_tension(element=el)[0] - exact) / exact for el in ("e9", "hex8fi"))
+    return "V2 uniform tension = FL/(AE) (e9 and hex8fi)", err < 1e-8, f"relative error {err:.2e}"
+
+
+def _cantilever(nd, element):
+    d, b, L, P = 4.0, 4.0, 40.0, 10.0
+    h = d / nd
+    g, e, i, j, k, fill = _bar(10 * nd, nd, nd, h)
+    clamp = _nodes_where(g, lambda p: p[:, 0] < 1e-9)
+    fixed = (3 * clamp[:, None] + np.arange(3)).ravel()
+    fem = FEM(g, np.ones(g.nelem, bool), fixed, NU, element=element)
+    end = e[i == g.nx - 1]
+    Fg = _face_load(g, end, np.ones(end.size), -P, 2, [1, 2, 5, 6])
+    K = fem.assemble(E0 * fill)
+    u = fem.expand(fem.solve(K, [fem.reduce_load(Fg)], rtol=1e-12)[0])
+    tip = _nodes_where(g, lambda p: abs(p[:, 0] - L) < 1e-9)
+    uz = -u[3 * tip + 2].mean()
+    I = b * d ** 3 / 12
+    G = E0 / (2 * (1 + NU))
+    timo = P * L ** 3 / (3 * E0 * I) + P * L / (5 / 6 * G * b * d)
+    return uz / timo
 
 
 def check_cantilever():
+    """Cantilever 40 x 4 x 4, fully clamped, tip load, vs Timoshenko beam theory.
+    e9 (default): 98-101 % at every depth, and 2 to 8 voxels deep differ by under 1 % (no locking).
+    The remaining ~0.7 % is the fully clamped end (no Poisson contraction there), which beam theory
+    leaves out. hex8fi: the locking table in run.py (0.869 / 0.957 / 0.983) must still hold."""
+    from .run import LOCKING, E9_TABLE
     res, ok = [], True
-    want = {2: (0.84, 0.90), 4: (0.93, 0.98), 8: (0.97, 0.995)}
-    for nd in (2, 4, 8):
-        d, b, L, P = 4.0, 4.0, 40.0, 10.0
-        h = d / nd
-        g, e, i, j, k, fill = _bar(10 * nd, nd, nd, h)
-        clamp = _nodes_where(g, lambda p: p[:, 0] < 1e-9)
-        fixed = (3 * clamp[:, None] + np.arange(3)).ravel()
-        fem = FEM(g, np.ones(g.nelem, bool), fixed, NU)
-        end = e[i == g.nx - 1]
-        Fg = _face_load(g, end, np.ones(end.size), -P, 2, [1, 2, 5, 6])
-        K = fem.assemble(E0 * fill)
-        u = fem.expand(fem.solve(K, [fem.reduce_load(Fg)], rtol=1e-12)[0])
-        tip = _nodes_where(g, lambda p: abs(p[:, 0] - L) < 1e-9)
-        uz = -u[3 * tip + 2].mean()
-        I = b * d ** 3 / 12
-        G = E0 / (2 * (1 + NU))
-        timo = P * L ** 3 / (3 * E0 * I) + P * L / (5 / 6 * G * b * d)
-        r = uz / timo
-        lo, hi = want[nd]
-        ok &= lo <= r <= hi
-        res.append(f"{nd} deep {100 * r:.1f}%")
-    return "V3 cantilever vs Timoshenko (shear locking expected)", ok, " · ".join(res)
+    e9 = {nd: _cantilever(nd, "e9") for nd in (2, 4, 8)}
+    for nd, r in e9.items():
+        ok &= 0.98 <= r <= 1.01 and r >= dict(E9_TABLE)[float(nd)] - 1e-3
+    ok &= max(e9.values()) - min(e9.values()) < 0.01
+    res.append("e9 " + ", ".join(f"{nd} deep {100 * r:.1f}%" for nd, r in e9.items()))
+    lt = dict(LOCKING)
+    fi = {nd: _cantilever(nd, "hex8fi") for nd in (2, 4, 8)}
+    for nd, r in fi.items():
+        ok &= abs(r - lt[float(nd)]) < 0.003
+    res.append("hex8fi " + ", ".join(f"{nd} deep {100 * r:.1f}%" for nd, r in fi.items()))
+    return "V3 cantilever vs Timoshenko (e9: no shear locking; hex8fi: locking table)", ok, " · ".join(res)
 
 
 def check_partial_volume():
@@ -129,27 +148,31 @@ def check_simp():
         f"{r['stiffer_pct']:.1f}% stiffer, volume error {r['vol_err']:.1e}"
 
 
-def check_buckling():
-    """Clamped column 4 x 4 x 60 voxels under axial load vs Euler; the locking-corrected factor
-    must be conservative (not above theory) and within 3 %."""
+def _column(a, L, element):
     from .physics import buckling
-    from .run import locking_factor
-    L, a = 60, 4
     g = Grid((a, a, L), 1.0, (0, 0, 0))
     base = _nodes_where(g, lambda p: p[:, 2] < 1e-9)
     top = _nodes_where(g, lambda p: abs(p[:, 2] - L) < 1e-9)
-    fem = FEM(g, np.ones(g.nelem, bool), (3 * base[:, None] + np.arange(3)).ravel(), NU)
+    fem = FEM(g, np.ones(g.nelem, bool), (3 * base[:, None] + np.arange(3)).ravel(), NU, element=element)
     F = np.zeros(3 * g.nnode)
     F[3 * top + 2] = -1.0 / top.size
     Ee = np.full(g.nelem, E0)
     K = fem.assemble(Ee)
     u = fem.solve(K, [fem.reduce_load(F)])[0]
     lam, _ = buckling(fem, K, u, Ee)
-    euler = np.pi ** 2 * E0 * (a ** 4 / 12) / (4 * L ** 2)
-    corr = lam[0] * locking_factor(a)
-    ok = -0.03 <= corr / euler - 1 <= 0.0
+    return lam[0] / (np.pi ** 2 * E0 * (a ** 4 / 12) / (4 * L ** 2))
+
+
+def check_buckling():
+    """Clamped column 4 x 4 x 60 voxels under axial load vs Euler. e9: within 1 % with no correction.
+    hex8fi: the locking-corrected factor must be conservative (not above theory) and within 3 %."""
+    from .run import locking_factor
+    r9 = _column(4, 60, "e9")
+    rf = _column(4, 60, "hex8fi")
+    corr = rf * locking_factor(4, "hex8fi")
+    ok = abs(r9 - 1) < 0.01 and -0.03 <= corr - 1 <= 0.0
     return "V7 buckling vs Euler (column 4 voxels across)", ok, \
-        f"raw {100 * (lam[0] / euler - 1):+.2f}%, corrected {100 * (corr / euler - 1):+.2f}%"
+        f"e9 {100 * (r9 - 1):+.2f}%; hex8fi raw {100 * (rf - 1):+.2f}%, corrected {100 * (corr - 1):+.2f}%"
 
 
 def check_anisotropic():
@@ -218,8 +241,46 @@ def check_impact():
         f"stiffness {100 * ek:+.2f}%, force {100 * ef:+.2f}% (limits 2 % and 1 %)"
 
 
+def check_patch():
+    """Patch test (Irons): a 3 x 3 x 3 block with a linear displacement field u = A x + c given on the
+    outer nodes. The inner nodes must take the same field exactly and every element the same strain,
+    for both elements and for an anisotropic D. A non-conforming element must pass this to converge."""
+    from .physics import transverse_iso_D
+    rng = np.random.default_rng(1)
+    A = rng.normal(size=(3, 3)) * 1e-3
+    c = rng.normal(size=3)
+    eps = np.array([A[0, 0], A[1, 1], A[2, 2], A[0, 1] + A[1, 0], A[1, 2] + A[2, 1], A[0, 2] + A[2, 0]])
+    worst_u, worst_e = 0.0, 0.0
+    for el in ("e9", "hex8fi"):
+        for D in (None, transverse_iso_D(1.0, 0.7, 0.3, 0.25, 0.3, (0.3, 0.2, 0.93))):
+            g = Grid((3, 3, 3), 1.0, (0, 0, 0))
+            nn = np.arange(g.nnode)
+            p = g.node_coords(nn)
+            outer = nn[np.any((p < 1e-9) | (p > 3 - 1e-9), axis=1)]
+            fixed = (3 * outer[:, None] + np.arange(3)).ravel()
+            fem = FEM(g, np.ones(g.nelem, bool), fixed, NU, D=D, element=el)
+            exact = (p @ A.T + c).ravel()
+            # full stiffness; prescribed outer displacements give the load on the free dofs: f = -K_fc u_c
+            from scipy.sparse import coo_matrix
+            rows = np.repeat(fem.edof, 24, axis=1).ravel()
+            cols = np.tile(fem.edof, (1, 24)).ravel()
+            Kfull = coo_matrix((np.tile(fem.ke.ravel() * E0, g.nelem), (rows, cols)),
+                               shape=(3 * g.nnode,) * 2).tocsr()
+            free = np.setdiff1d(np.arange(3 * g.nnode), fixed)
+            ub = np.zeros(3 * g.nnode)
+            ub[fixed] = exact[fixed]
+            f = -(Kfull @ ub)[free]
+            from scipy.sparse.linalg import spsolve
+            u = ub.copy()
+            u[free] = spsolve(Kfull[free][:, free].tocsc(), f)
+            worst_u = max(worst_u, float(np.abs(u - exact).max() / np.abs(exact).max()))
+            worst_e = max(worst_e, float(np.abs(u[fem.edof] @ fem.B0.T - eps).max() / np.abs(eps).max()))
+    return "V10 patch test, linear field exact (e9 and hex8fi, isotropic and anisotropic)", \
+        worst_u < 1e-10 and worst_e < 1e-9, f"displacement error {worst_u:.1e}, strain error {worst_e:.1e}"
+
+
 CHECKS = [check_rigid_body, check_tension, check_cantilever, check_partial_volume,
-          check_determinism, check_simp, check_buckling, check_anisotropic, check_impact]
+          check_determinism, check_simp, check_buckling, check_anisotropic, check_impact, check_patch]
 
 
 def run_all(log=print):

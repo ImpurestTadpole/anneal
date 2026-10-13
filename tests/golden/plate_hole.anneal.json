@@ -1,0 +1,84 @@
+{
+ "name": "plate_hole",
+ "model": "plate_hole.stl",
+ "resolution": {
+  "voxelMM": 1.0
+ },
+ "material": "AlSi10Mg-LPBF",
+ "anchors": [
+  {
+   "name": "edge",
+   "role": "fixed",
+   "region": {
+    "type": "box",
+    "min": [
+     -1,
+     -1,
+     -1
+    ],
+    "max": [
+     0.4,
+     31,
+     7
+    ]
+   }
+  },
+  {
+   "name": "pin",
+   "role": "load",
+   "hole": true,
+   "region": {
+    "type": "pipe",
+    "from": [
+     35,
+     15,
+     0
+    ],
+    "to": [
+     35,
+     15,
+     6
+    ],
+    "r": 5.0,
+    "rIn": 3.0
+   },
+   "loads": {
+    "pull": [
+     2000,
+     0,
+     0
+    ],
+    "lift": [
+     0,
+     0,
+     300
+    ]
+   }
+  }
+ ],
+ "loadCases": {
+  "pull": {
+   "weight": 1.0
+  },
+  "lift": {
+   "weight": 1.0
+  }
+ },
+ "objective": {
+  "volumeFraction": 0.45,
+  "combine": "worst"
+ },
+ "optimizer": {
+  "iterations": 40
+ },
+ "limits": {
+  "maxDisplacementMM": 0.2,
+  "minSafetyFactor": 1.5
+ },
+ "output": {
+  "report": false,
+  "formats": [
+   "stl"
+  ]
+ }
+}

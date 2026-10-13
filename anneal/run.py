@@ -13,18 +13,28 @@ from .problem import Problem
 from .fem import FEM
 from .geometry import voxel_fill
 from .optimize import simp
-from .export import output_field, choose_level, keep_load_paths, surface, member_thickness
+from .export import output_field, choose_level, keep_load_paths, surface, member_thickness, \
+    surface_settings, sharp_field, sharp_clip
 from . import report
+from . import provenance
 
 
-# Measured in validation check V3: hex8 stiffness ratio (exact / voxel model) vs voxels through depth.
+# Measured in validation check V3: tip deflection of the voxel cantilever / Timoshenko beam theory vs
+# voxels through the depth. Plain hex8 ("hex8fi") locks in shear and is much too stiff when members are
+# thin. The incompatible-modes element ("e9", the default) does not lock; what is left (under 1.5 %)
+# is mostly the fully clamped end, which beam theory does not model, so dividing by it is conservative.
 LOCKING = [(1.0, 0.70), (2.0, 0.869), (4.0, 0.957), (8.0, 0.983), (16.0, 0.995)]
+E9_TABLE = [(1.0, 0.985), (2.0, 0.986), (4.0, 0.990), (8.0, 0.992), (16.0, 0.993)]
 
 
-def locking_factor(n_vox):
+MIN_ANCHOR_NODES = 8      # fewer nodes act as a point support or point load (singular stress)
+
+
+def locking_factor(n_vox, element="hex8fi"):
     """Fraction of true compliance the voxel model shows for members n_vox thick (conservative)."""
-    xs = np.log2([p[0] for p in LOCKING])
-    ys = [p[1] for p in LOCKING]
+    tab = E9_TABLE if element == "e9" else LOCKING
+    xs = np.log2([p[0] for p in tab])
+    ys = [p[1] for p in tab]
     return float(np.interp(np.log2(max(n_vox, 1.0)), xs, ys))
 
 
@@ -50,8 +60,10 @@ def evaluate(prob, fill, label, log):
                                f"larger freezeMM (for example 3) so material stays where the part is held "
                                f"or loaded, then run again.") from None
         raise
+    for c, fb in prob.body_loads(fill).items():   # self-weight of this geometry
+        F[c] = F[c] + fb
     D = getattr(prob, "D", None)
-    fem = FEM(g, active, fixed, prob.material["nu"], log=log, D=D)
+    fem = FEM(g, active, fixed, prob.material["nu"], log=log, D=D, element=prob.element)
     E0 = prob.material["E"]
     K = fem.assemble(E0 * fill[fem.act])
     t_solve = time.time()
@@ -68,11 +80,14 @@ def evaluate(prob, fill, label, log):
     worst_disp, worst_sig, worst_sz, worst_hill = 0.0, 0.0, 0.0, 0.0
     proc = getattr(prob, "process", None)
     bdir = (proc or {}).get("buildDirection")
-    u_fields, vm_fields = {}, {}
+    u_fields, vm_fields, se_fields = {}, {}, {}
     for c, u_r in zip(prob.cases, Us):
         u = fem.expand(u_r)
         mag = np.linalg.norm(u.reshape(-1, 3), axis=1)
         vm = fem.von_mises(u, E0)
+        se_full = np.zeros(g.nelem)
+        se_full[fem.act] = 0.5 * E0 * fill[fem.act] * fem.element_energy(u)
+        se_fields[c] = se_full
         u_fields[c] = u.reshape(-1, 3).astype(np.float32)
         vm_full = np.zeros(g.nelem, np.float32)
         vm_full[fem.act] = vm
@@ -114,7 +129,7 @@ def evaluate(prob, fill, label, log):
                            t_solve, prob.material["yield"], E0)
     except Exception as e:   # the report is extra information: never lose a run over it
         res["fea"] = {"error": str(e)}
-    res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields}
+    res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields, "se": se_fields, "fill": fill}
     return res
 
 
@@ -129,7 +144,7 @@ def impact_check(prob, fill, lf, log):
     fill = np.where(active, fill, 0.0)
     fixed, _, _ = prob.boundary(active)
     D = getattr(prob, "D", None)
-    fem = FEM(g, active, fixed, prob.material["nu"], log=lambda *a: None, D=D)
+    fem = FEM(g, active, fixed, prob.material["nu"], log=lambda *a: None, D=D, element=prob.element)
     E0 = prob.material["E"]
     K = fem.assemble(E0 * fill[fem.act])
     anchor_nodes = prob.load_nodes(active)
@@ -193,7 +208,10 @@ def buckling_check(prob, fill, lf, log):
     active = prob._connected(fill >= 0.05)
     fill = np.where(active, fill, 0.0)
     fixed, F, _ = prob.boundary(active)
-    fem = FEM(g, active, fixed, prob.material["nu"], log=lambda *a: None, D=getattr(prob, "D", None))
+    for c, fb in prob.body_loads(fill).items():
+        F[c] = F[c] + fb
+    fem = FEM(g, active, fixed, prob.material["nu"], log=lambda *a: None, D=getattr(prob, "D", None),
+              element=prob.element)
     E0 = prob.material["E"]
     Ee = E0 * fill[fem.act]
     K = fem.assemble(Ee)
@@ -227,7 +245,7 @@ def checks(prob, built, thick):
     vf = prob.vf
     if "maxDisplacementMM" in lim:
         ok = built["maxDisplacementMM"] <= lim["maxDisplacementMM"]
-        out.append({"name": "Maximum displacement (corrected for shear locking)", "ok": ok,
+        out.append({"name": "Maximum displacement (corrected for " + ("shear locking)" if prob.element == "hex8fi" else "discretisation)"), "ok": ok,
                     "value": f"{built['maxDisplacementMM']:.4g} mm (raw {built.get('maxDisplacementRawMM', built['maxDisplacementMM']):.4g})",
                     "limit": f"≤ {lim['maxDisplacementMM']} mm",
                     "fix": "" if ok else f"Raise objective.volumeFraction (now {vf}), widen the design space, "
@@ -239,13 +257,43 @@ def checks(prob, built, thick):
                     "value": f"{built['safetyFactor']:.2f}", "limit": f"≥ {lim['minSafetyFactor']}",
                     "fix": "" if ok else f"Raise volumeFraction (now {vf}), raise optimizer.minMemberMM so members "
                                          f"get thicker, or reduce the load."})
-    if thick.size:
+    if thick.size and prob.element != "hex8fi":
+        frac = float((thick < 2.5).mean())
+        out.append({"name": "Member thickness in voxels (information)", "ok": True, "warn": frac >= 0.25,
+                    "value": f"{100 * (1 - frac):.0f} % of skeleton ≥ 3 voxels", "limit": "e9 element: no shear locking",
+                    "fix": "" if frac < 0.25 else "Many members are 1–2 voxels thick: stress there is coarse. Rerun with "
+                                                 "resolution 'fine' for sharper stress values."})
+    elif thick.size:
         frac = float((thick < 5.5).mean())
         good = frac < 0.25
         out.append({"name": "Members ≥ 6 voxels thick (shear locking)", "ok": True, "warn": not good,
                     "value": f"{100 * (1 - frac):.0f} % of skeleton", "limit": "≥ 75 % (else warning)",
                     "fix": "" if good else f"Displacement was scaled by {1 / built.get('lockingFactor', 1):.3f} to stay "
                                            f"conservative. For a sharper answer, rerun with resolution 'fine'."})
+    an = prob.derived.get("anchorNodes")
+    if an:
+        few = {k: v for k, v in an.items() if v < MIN_ANCHOR_NODES}
+        out.append({"name": "Nodes per support and load region", "ok": True, "warn": bool(few),
+                    "value": f"fewest {min(an.values())} ({min(an, key=an.get)})", "limit": f"≥ {MIN_ANCHOR_NODES} (else warning)",
+                    "fix": "" if not few else f"{', '.join(few)}: make the region larger than about two voxels "
+                                              f"({2 * prob.grid.h:g} mm) each way, or use a finer resolution. A region "
+                                              f"of only a few nodes is a point load or support, and the stress next to it "
+                                              f"grows without limit as the mesh gets finer."})
+    lpr = built.get("loadPaths")
+    if lpr is not None:
+        lowered = lpr["isoLevelTo"] < lpr["isoLevelFrom"] - 1e-9
+        changed = lowered or lpr["repaired"]
+        out.append({"name": "Load paths from every load to a support", "ok": not lpr["stillCut"],
+                    "warn": bool(changed) and not lpr["stillCut"],
+                    "value": ("connected as optimized" if not changed else
+                              (f"iso level lowered {lpr['isoLevelFrom']:.2f} → {lpr['isoLevelTo']:.2f}" if lowered else "")
+                              + ("; " if lowered and lpr["repaired"] else "")
+                              + (f"material added for {', '.join(lpr['repaired'])} ({lpr['addedVoxels']} voxels)" if lpr["repaired"] else ""))
+                             + (f"; still thin: {', '.join(lpr['stillCut'])}" if lpr["stillCut"] else ""),
+                    "limit": "connected",
+                    "fix": "" if not changed and not lpr["stillCut"] else
+                    "The export changed the optimized shape to keep loads connected; the as-built re-solve above includes "
+                    "that change. For a cleaner part raise volumeFraction or iterations."})
     if "impact" in built:
         imin = float(lim.get("minImpactSafetyFactor", 1.0))
         for name, r in built["impact"].items():
@@ -284,7 +332,7 @@ def checks(prob, built, thick):
         bmin = float(lim.get("minBucklingFactor", 2.0))
         worst = min(v["corrected"] for v in built["buckling"].values())
         ok = worst >= bmin
-        out.append({"name": "Buckling load factor (linear, corrected for shear locking)", "ok": ok,
+        out.append({"name": "Buckling load factor (linear" + (", corrected for shear locking)" if prob.element == "hex8fi" else ")"), "ok": ok,
                     "value": ", ".join(f"{c} {v['corrected']:.3g}" for c, v in built["buckling"].items()),
                     "limit": f"≥ {bmin:g}",
                     "fix": "" if ok else "Raise volumeFraction or optimizer.minMemberMM so slender members get "
@@ -345,6 +393,11 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
 
     fixed, F, info = prob.boundary(prob.active)
     log("  anchor nodes: " + ", ".join(f"{k} {v}" for k, v in info.items()))
+    prob.derived["anchorNodes"] = dict(info)
+    few = {k: v for k, v in info.items() if v < MIN_ANCHOR_NODES}
+    if few:
+        log(f"  WARNING: anchor(s) {', '.join(f'{k} ({v} nodes)' for k, v in few.items())} hold fewer than "
+            f"{MIN_ANCHOR_NODES} nodes: the support or load acts almost at a point, so stress there is not meaningful.")
     opt = prob.opt
     phys = prob.spec.get("physics", {}) or {}
     prob.D = None
@@ -380,18 +433,30 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
                    r_mm=r_mm, x0=x0,
                    p_final=float(opt.get("penalty", 3.0)), move=float(opt.get("move", 0.2)),
                    combine=prob.combine, log=log, beta_max=float(opt.get("sharpness", 4.0)),
-                   D=prob.D, mfilter=mill() if mill else None)
+                   D=prob.D, mfilter=mill() if mill else None, element=prob.element,
+                   gravity=(prob.gravity_coef(), prob.gravity) if prob.gravity else None)
         x = res["x"]
         log("Generating the surface")
         f = output_field(prob, x)
         iso = prob.out_opts.get("isoLevel", "auto")
         level = choose_level(prob, f, x) if iso in (None, "auto") else float(iso)
         lp = prob.spec.get("loadPaths", {})
+        prob._load_path_record = None
         if lp.get("guard", True):
             f, level = keep_load_paths(prob, f, level, log=log, margin=float(lp.get("margin", 0.1)),
                                        max_drop=float(lp.get("maxDrop", 0.15)), repair=bool(lp.get("repair", True)))
-        mesh = surface(g, f, level, upsample=int(prob.out_opts.get("upsample", 2)),
-                       smooth=int(prob.out_opts.get("smoothing", 10)), log=log)
+        edges, detail, up, sm = surface_settings(prob.out_opts)
+        if (edges, detail) != ("smooth", "normal"):
+            prob.derived["surface"] = f"{edges} edges, {detail} detail (upsample {up}, smoothing {sm})"
+        if edges == "sharp":
+            try:
+                mesh = sharp_clip(prob, surface(g, sharp_field(prob, f, x), level, upsample=up, smooth=sm, log=log), log)
+            except Exception as e:   # never lose a run over the finishing step
+                log(f"  sharp edges not applied ({e}); smooth surface used")
+                prob.derived["sharpEdges"] = f"not applied: {e}"
+                mesh = surface(g, f, level, upsample=up, smooth=max(sm, 6), log=log)
+        else:
+            mesh = surface(g, f, level, upsample=up, smooth=sm, log=log)
         log(f"  {len(mesh.faces):,} triangles, watertight: {mesh.is_watertight}")
         from .finish import finish
         mesh, exact = finish(prob, mesh, log)
@@ -403,13 +468,16 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         built = evaluate(prob, fill_b, "Optimized (as built)", log)
         thick = member_thickness(g, fill_b)
         n25 = float(np.percentile(thick, 25)) if thick.size else 8.0
-        lf = locking_factor(n25)
+        lf = locking_factor(n25, prob.element)
         built["memberVoxelsP25"] = n25
+        if getattr(prob, "_load_path_record", None) is not None:
+            built["loadPaths"] = prob._load_path_record
         built["lockingFactor"] = lf
         built["maxDisplacementRawMM"] = built["maxDisplacementMM"]
         built["maxDisplacementMM"] = built["maxDisplacementMM"] / lf
         log(f"  thin members (25th percentile) {n25:.1f} voxels -> displacement corrected x{1 / lf:.3f} "
-            f"for shear locking: {built['maxDisplacementMM']:.4g} mm")
+            + ("for shear locking" if prob.element == "hex8fi" else "for discretisation (e9 element)")
+            + f": {built['maxDisplacementMM']:.4g} mm")
         return {"vf": vf, "res": res, "x": x, "f": f, "level": level, "mesh": mesh,
                 "fill_b": fill_b, "built": built, "thick": thick}
 
@@ -516,6 +584,13 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         log(f"  [{'WARN' if c.get('warn') else 'PASS' if c['ok'] else 'FAIL'}] {c['name']}: {c['value']} (limit {c['limit']})"
             + (f" — {c['fix']}" if c["fix"] else ""))
 
+    adv = None
+    if prob.out_opts.get("advanced"):
+        log("Advanced output: graphs and statements")
+        from . import advanced
+        adv = advanced.write(out_dir, prob, built)
+        for line in adv["insights"]:
+            log("  - " + line)
     np.save(os.path.join(out_dir, "density.npy"), g.to3d(x).astype(np.float32))
     save_fields(os.path.join(out_dir, "fields-optimized.npz"), g, built)
     save_fields(os.path.join(out_dir, "fields-original.npz"), g, original)
@@ -533,6 +608,8 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
                     "original": {k: v for k, v in original.items() if not k.startswith("_")} if original else None},
         "checks": chk,
         "process": prob.process,
+        "solver": provenance.record(prob.element),
+        **({"advanced": adv} if adv else {}),
         "dfm": dfm_summary,
         "history": history_record,
         "outputs": {os.path.basename(p): _sha(p) for p in files},
@@ -545,7 +622,7 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
     if prob.out_opts.get("report", True):
         view = mesh
         if len(mesh.faces) > 160_000:
-            view = surface(g, f, level, upsample=1, smooth=int(prob.out_opts.get("smoothing", 10)), log=lambda *a: None)
+            view = surface(g, f, level, upsample=1, smooth=surface_settings(prob.out_opts)[3], log=lambda *a: None)
         html = report.write(out_dir, prob, res, view, built, original, chk, thick, record)
     copy_to = prob.out_opts.get("copyTo")
     if copy_to:

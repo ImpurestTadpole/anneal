@@ -3,7 +3,7 @@
   inspect MODEL          sizes, volume, closed or not, and a coordinate preview image
   init MODEL             write a starter spec next to the model (edit the anchors, then run)
   run SPEC               optimize, re-solve the result, check it, write the report
-  validate               solver validation gate (6 checks)
+  validate               solver validation gate (10 checks)
   drop PATH              for drag-and-drop: a model gives init, a spec gives run
 """
 import argparse
@@ -259,8 +259,13 @@ def main(argv=None):
                       f"SF {r['safety_factor'] or 0:.2f}  {'OK  ' if r['all_ok'] else 'FAIL'}  {r['run_dir']}")
         elif args.cmd == "validate":
             from .validate import run_all
+            from .provenance import store_gate
             print("Solver validation gate")
-            return 0 if run_all() else 1
+            lines = []
+            ok = run_all(log=lambda m: (print(m), lines.append(m)))
+            rec = store_gate(ok, lines)
+            print(f"  solver build {rec['solverSha256'][:12]}: result stored, runs made with this build will cite it")
+            return 0 if ok else 1
         elif args.cmd == "materials":
             return cmd_materials(args)
         elif args.cmd == "drop":

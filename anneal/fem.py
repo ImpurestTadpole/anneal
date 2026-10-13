@@ -68,7 +68,49 @@ def _B(dNdx):
     return B
 
 
-def hex8_matrices(nu, h=1.0, D=None):
+ELEMENTS = ("e9", "hex8fi")
+DEFAULT_ELEMENT = "e9"
+
+
+def hex8_e9(nu, h=1.0, D=None):
+    """Hex8 with 9 incompatible (bubble) modes, statically condensed to 24 x 24 (Wilson et al. 1973;
+    Taylor, Beresford and Wilson 1976). Each displacement component gets the three bubbles
+    P_k = 1 - xi_k^2. On a cube the Jacobian is constant, so Wilson's element and Taylor's patch-test
+    correction are the same element; it passes the patch test (check V10) and removes the parasitic
+    shear that makes a full-integration hex8 too stiff in bending.
+    Condensation: ke = Kaa - Kab inv(Kbb) Kba. The bubbles have zero gradient at the centre, so the
+    centre strain B0 u (used for stress) is unchanged."""
+    D = elasticity_D(nu) if D is None else np.asarray(D, float)
+    g = 1 / np.sqrt(3)
+    jac = h / 2
+    Kaa, Kab, Kbb = np.zeros((24, 24)), np.zeros((24, 9)), np.zeros((9, 9))
+    for xi in (-g, g):
+        for eta in (-g, g):
+            for zeta in (-g, g):
+                Ba = _B(_dN(xi, eta, zeta) / jac)
+                G = np.diag([-2 * xi, -2 * eta, -2 * zeta]) / jac      # gradients of the 3 bubbles
+                Gp = np.zeros((8, 3))
+                Gp[:3] = G
+                Bi = _B(Gp)[:, :9]
+                w = jac ** 3
+                Kaa += Ba.T @ D @ Ba * w
+                Kab += Ba.T @ D @ Bi * w
+                Kbb += Bi.T @ D @ Bi * w
+    ke = Kaa - Kab @ np.linalg.solve(Kbb, Kab.T)
+    ke = 0.5 * (ke + ke.T)
+    B0 = _B(_dN(0, 0, 0) / jac)
+    return ke, B0, D
+
+
+def hex8_matrices(nu, h=1.0, D=None, element="hex8fi"):
+    if element == "e9":
+        return hex8_e9(nu, h, D)
+    if element != "hex8fi":
+        raise ValueError(f"Unknown element '{element}'. Use one of {', '.join(ELEMENTS)}.")
+    return _hex8_full(nu, h, D)
+
+
+def _hex8_full(nu, h=1.0, D=None):
     """Element stiffness (E = 1) for a cube of side h by 2x2x2 Gauss quadrature,
     plus the strain-displacement matrix at the centre and D.
     D (optional): a 6x6 constitutive matrix normalised to the reference modulus
@@ -132,14 +174,15 @@ class Grid:
 class FEM:
     """Linear elastic solve on the active voxels of a grid."""
 
-    def __init__(self, grid, active, fixed_dofs, nu, log=None, D=None):
+    def __init__(self, grid, active, fixed_dofs, nu, log=None, D=None, element=DEFAULT_ELEMENT):
         t0 = time.time()
         self.grid = grid
         self.log = log or (lambda *a: None)
         self.act = np.flatnonzero(active)
         if self.act.size == 0:
             raise SolverError("No active voxels: the design space is empty.")
-        ke, self.B0, self.D = hex8_matrices(nu, grid.h, D)
+        self.element = element
+        ke, self.B0, self.D = hex8_matrices(nu, grid.h, D, element)
         self.ke = ke
         en = grid.element_nodes(self.act)
         self.edof = (3 * en[:, :, None] + np.arange(3)).reshape(-1, 24)

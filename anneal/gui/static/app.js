@@ -66,6 +66,8 @@ function setp(o, path, v) {
 }
 
 // ------------------------------------------------------------------ spec
+// output.detail x output.edges -> [upsample, smoothing]; the same table as export.DETAIL
+const SURF = { coarse: { smooth: [1, 12], sharp: [1, 3] }, normal: { smooth: [2, 10], sharp: [2, 3] }, fine: { smooth: [3, 8], sharp: [3, 2] } };
 function defaultSpec(p) {
   const ext = p.bounds[1].map((v, i) => v - p.bounds[0][i]);
   const diag = Math.hypot(...ext);
@@ -76,7 +78,7 @@ function defaultSpec(p) {
     optimizer: { iterations: 70, massPasses: 5, penalty: 3, move: 0.2, sharpness: 4 },
     limits: { maxDisplacementMM: +(diag / 500).toPrecision(2), minSafetyFactor: 2 },
     loadPaths: { guard: true, margin: 0.1, maxDrop: 0.15, repair: true },
-    output: { formats: ["stl", "3mf"], smoothing: 10, upsample: 2, isoLevel: "auto", report: true, exactFeatures: true },
+    output: { formats: ["stl", "3mf"], edges: "smooth", detail: "normal", isoLevel: "auto", report: true, exactFeatures: true },
   };
 }
 function cases() { return Object.keys(S.spec.loadCases || { main: {} }); }
@@ -118,18 +120,34 @@ function derived(meta, role) {
   }
   return r;
 }
+function outlineArea(meta) {
+  const o = meta && meta.base && meta.base.outline;
+  if (!o) return 0;
+  return o.tris.reduce((s, t) => s + Math.abs((t[2] - t[0]) * (t[5] - t[1]) - (t[4] - t[0]) * (t[3] - t[1])) / 2, 0);
+}
 function sync() {
   const sp = S.spec, g = S.gui;
   sp.anchors.forEach((a, i) => {
     const m = g.anchors[i] || {};
+    delete a.pressure; delete a.areaMM2; delete a.normal;
     if (a.role === "load") {
       a.loads = {};
-      for (const c of cases()) a.loads[c] = vecFor(m, c);
+      const area = outlineArea(m);
+      for (const c of cases()) {
+        const f = (m.forces || {})[c];
+        if (f && f.unit === "MPa" && area > 0) {
+          (a.pressure ??= {})[c] = +f.mag || 0;
+          a.areaMM2 = +area.toFixed(4); a.normal = m.normal || [0, 0, 1];
+        } else a.loads[c] = vecFor(m, c);
+      }
     } else delete a.loads;
   });
+  const gr = g.gravity || {};
+  if (gr.on && cases().includes(gr.case)) sp.gravity = { [gr.case]: (AXIS[gr.dir] || [0, 0, -1]).map(v => v * (+gr.g || 0)) };
+  else delete sp.gravity;
   sp.keepOut = g.keepOut.map(m => derived(m, "keepOut"));
   sp.keep = g.keep.map(m => derived(m, "keep"));
-  const used = new Set(sp.anchors.flatMap(a => a.loads ? Object.keys(a.loads) : []));
+  const used = new Set(sp.anchors.flatMap(a => [...Object.keys(a.loads || {}), ...Object.keys(a.pressure || {})]));
   if (used.size) for (const c of Object.keys(sp.loadCases)) if (!used.has(c)) delete sp.loadCases[c];
   syncImpact();
 }
@@ -151,6 +169,16 @@ function syncImpact() {
   const c = { anchor: m.anchor, massKg: +m.massKg || 0, direction: AXIS[m.dir] || [0, 0, -1] };
   if (m.mode === "height") c.dropHeightMM = +m.value || 0; else c.speedMS = +m.value || 0;
   S.spec.impact = { [m.name || "impact"]: c };
+}
+function gravityFields() {
+  const g = (S.gui.gravity ??= { on: false, case: cases()[0], g: 1, dir: "-z" });
+  const head = chk("gui:gravity.on", g.on, "Add the part's own weight (or a steady acceleration)",
+    "The weight follows the design while it is optimized. 1 g is gravity; use more for a vehicle or a drop shock.", "data-rerender");
+  if (!g.on) return head;
+  return head + `
+    ${row("To load case", `<select data-bind="gui:gravity.case" data-kind="text">${cases().map(c => `<option ${c === g.case ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`)}
+    ${row("Acceleration, g", num("gui:gravity.g", g.g, 'min="0" step="any"'))}
+    ${row("Direction", `<select data-bind="gui:gravity.dir" data-kind="text">${DIRS.filter(([v]) => AXIS[v]).map(([v, t]) => `<option value="${v}" ${g.dir === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}`;
 }
 function impactFields() {
   const m = impactGui(), loads = S.spec.anchors.filter(a => a.role === "load").map(a => a.name);
@@ -319,6 +347,23 @@ const num = (bind, val, attrs = "") => `<input type="number" data-bind="${bind}"
 const row = (label, ctrl, help) => `<label class="row"><span>${label}</span>${ctrl}</label>${help ? `<p class="help">${help}</p>` : ""}`;
 const chk = (bind, on, label, help, attrs = "") => `<label class="check"><input type="checkbox" data-bind="${bind}" data-kind="bool" ${on ? "checked" : ""} ${attrs}><span>${label}${help ? `<br><span class="quiet">${help}</span>` : ""}</span></label>`;
 
+function machiningFields(p) {
+  const ax = +(p.axes || 3), su = p.setups || ["+z"], o = S.spec.optimizer || {};
+  const SIDES = ["+z", "-z", "+x", "-x", "+y", "-y"];
+  const bv = p.buildVolumeMM || [0, 0, 0];
+  return `
+    ${row("Machine", `<select data-proc="axes" data-num data-rerender><option value="3" ${ax === 3 ? "selected" : ""}>3-axis</option><option value="5" ${ax === 5 ? "selected" : ""}>5-axis</option></select>`)}
+    ${ax === 3 ? `<div class="row wide"><span class="quiet">Setups: the tool comes from</span><div class="dofs">${SIDES.map(d => `<label><input type="checkbox" data-proc-setup="${d}" ${su.includes(d) ? "checked" : ""}> ${d.toUpperCase()}</label>`).join("")}</div></div>
+      ${chk("optimizer.machiningFilter", o.machiningFilter !== false, "Keep every empty space open to the tool while optimizing",
+        "No undercuts: the optimizer only makes shapes a 3-axis cutter can reach from the setups above.")}`
+      : row("Clamped side (fixture)", `<select data-proc="fixture">${SIDES.map(d => `<option value="${d}" ${(p.fixture || "-z") === d ? "selected" : ""}>${d.toUpperCase()}</option>`).join("")}</select>`, "The tool may come from any side except this one.")}
+    ${row("Smallest tool diameter, mm", `<input type="number" data-proc="toolDiameterMM" value="${p.toolDiameterMM ?? 6}" min="0.5" step="0.5">`, "Inside corners and slots smaller than this cannot be cut.")}
+    ${row("Tool reach (depth ÷ diameter)", `<input type="number" data-proc="maxDepthToDiameter" value="${p.maxDepthToDiameter ?? 4}" min="1" step="0.5">`)}
+    ${row("Minimum wall, mm", `<input type="number" data-proc="minWallMM" value="${p.minWallMM}" min="0" step="0.1">`)}
+    ${row("Minimum hole, mm", `<input type="number" data-proc="minHoleMM" value="${p.minHoleMM}" min="0" step="0.1">`)}
+    <div class="row wide"><span class="quiet">Machine travel x, y, z (mm)</span><div class="xyz">${[0, 1, 2].map(i => `<input type="number" data-proc-vol="${i}" value="${bv[i]}" min="1" step="1">`).join("")}</div></div>
+    <div class="btns"><button class="btn" data-view="print">Show machinability</button></div>`;
+}
 function processFields() {
   const p = effProcess(), sp = S.spec.process;
   const ov = sp && typeof sp === "object" ? sp : {};
@@ -327,13 +372,13 @@ function processFields() {
   const b = p ? p.buildDirection : [0, 0, 1];
   const bv = p ? p.buildVolumeMM : [0, 0, 0];
   const matProc = matNow().process;
-  return `<fieldset><legend>Process and printability</legend>
+  return `<fieldset><legend>${p && p.method === "machining" ? "Process and machinability" : "Process and printability"}</legend>
     <p class="help">The process sets the printability (DFM) checks of each run. Values you change here apply to this project only.</p>
     ${row("Process", `<select id="procSel">
       <option value="" ${sel === "" ? "selected" : ""}>${matProc ? `From the material (${esc(matProc)})` : "From the material (none set)"}</option>
       ${Object.keys(S.processes).map(k => `<option ${sel === k ? "selected" : ""}>${esc(k)}</option>`).join("")}
       <option value="__none" ${sel === "__none" ? "selected" : ""}>None (no printability checks)</option></select>`)}
-    ${p ? `
+    ${p && p.method === "machining" ? machiningFields(p) : p ? `
       ${row("Build direction (up)", `<select id="procDir">${Object.keys(AXES).map(k => `<option ${axisName(b) === k ? "selected" : ""}>${k}</option>`).join("")}
         ${Object.keys(AXES).includes(axisName(b)) ? "" : `<option selected>${axisName(b)}</option>`}</select>`)}
       ${row("Steepest overhang without support, ° from vertical", `<input type="number" data-proc="maxOverhangDeg" value="${p.maxOverhangDeg}" min="0" max="90" step="1">`, "90 means the process needs no support (powder beds).")}
@@ -406,6 +451,7 @@ const BODY = {
           <input type="number" value="${sp.loadCases[c].weight ?? 1}" data-bind="loadCases.${c}.weight" min="0" step="0.1" aria-label="Weight">
           ${cases().length > 1 ? `<button class="icon" data-case-del="${esc(c)}" title="Remove case">✕</button>` : ""}</span>`).join("")}
           <button class="btn" data-case-add>Add case</button></div>
+        ${gravityFields()}
         ${cases().length > 1 ? `<div class="row"><span>Viewer shows</span><select id="caseShow">${cases().map(c => `<option ${S.view.case === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>` : ""}
       </fieldset>
       ${rows || `<p class="quiet">No supports or loads yet.</p>`}
@@ -473,6 +519,11 @@ const BODY = {
         ${row("Move limit per iteration", num("optimizer.move", o.move ?? 0.2, 'min="0.02" max="0.5" step="0.01"'))}
         ${row("Edge sharpness", num("optimizer.sharpness", o.sharpness ?? 4, 'min="0" max="16" step="1"'), "Heaviside projection. 0 turns it off; above 8 can stall.")}
       </fieldset>
+      <fieldset><legend>Solver</legend>
+        ${row("Element", `<select data-bind="solver.element" data-kind="text">
+          ${[["e9", "Hex8 with incompatible modes (recommended)"], ["hex8fi", "Plain hex8 (Anneal 0.3 results)"]].map(([v, t]) => `<option value="${v}" ${((S.spec.solver || {}).element || "e9") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`,
+          "The recommended element bends correctly even in members one or two voxels thick. Plain hex8 is too stiff there and is corrected afterwards.")}
+      </fieldset>
       <fieldset><legend>Load paths</legend>
         ${chk("loadPaths.guard", lp.guard !== false, "Keep every load connected to a support", "Checks the part before the surface is made.")}
         ${row("Required density above the surface level", num("loadPaths.margin", lp.margin ?? 0.1, 'min="0" max="0.5" step="0.01"'))}
@@ -486,14 +537,22 @@ const BODY = {
         <p class="help">STL is always written. 3MF opens straight in Bambu Studio and other slicers. STEP opens as a
           solid body in SolidWorks, Fusion and FreeCAD (faceted; needs the STEP add-on).</p>
         ${out.formats.includes("step") ? row("STEP faces", num("output.stepFaces", out.stepFaces ?? 20000, 'min="1000" step="1000" data-kind="int"'), "Fewer faces = smaller file. 20 000 keeps the shape within a fraction of a millimetre.") : ""}
-        ${row("Smoothing passes", num("output.smoothing", out.smoothing ?? 10, 'min="0" max="60" data-kind="int"'))}
-        ${row("Surface detail", `<select data-bind="output.upsample" data-kind="int">
-          ${[[1, "Voxel size"], [2, "2× finer"], [3, "3× finer (large files)"]].map(([v, t]) => `<option value="${v}" ${+out.upsample === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
+        ${row("Edges", `<select data-bind="output.edges" data-kind="text" data-rerender>
+          ${[["smooth", "Smooth (organic)"], ["sharp", "Sharp (flat outer faces, crisp edges)"]].map(([v, t]) => `<option value="${v}" ${(out.edges || "smooth") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`,
+          "Sharp keeps the design space's outer faces and edges exact: use it for machined or flat-sided parts.")}
+        ${row("Surface detail", `<select data-bind="output.detail" data-kind="text" data-rerender>
+          ${[["coarse", "Coarse (small files, fast)"], ["normal", "Normal"], ["fine", "Fine (crisp detail, large files)"]].map(([v, t]) => `<option value="${v}" ${(out.detail || "normal") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
+        <details class="log"><summary>Custom surface values</summary>
+        ${row("Smoothing passes", num("output.smoothing", out.smoothing, `min="0" max="60" data-kind="int" placeholder="${SURF[out.detail || "normal"][out.edges || "smooth"][1]} (preset)"`))}
+        ${row("Upsampling", num("output.upsample", out.upsample, `min="1" max="4" data-kind="int" placeholder="${SURF[out.detail || "normal"][out.edges || "smooth"][0]} (preset)"`), "Leave empty to use the preset above.")}
+        </details>
         ${row("Surface level", `<input type="text" data-bind="output.isoLevel" data-kind="iso" value="${out.isoLevel ?? "auto"}" placeholder="auto">`,
           "auto keeps the optimized volume. A number from 0.1 to 0.9: lower gives thicker members.")}
         ${chk("output.exactFeatures", !!out.exactFeatures, "Keep exact geometry at supports, loads and kept regions; cut keep-outs exactly",
           "Bolt holes, flanges and faces you picked come out as in the model instead of smoothed.")}
         ${chk("output.report", out.report !== false, "Write an HTML report")}
+        ${chk("output.advanced", !!out.advanced, "Advanced output: graphs and how the part works",
+          "Stress and safety-factor distributions, load-path concentration, support reactions, the same part in every library material, and plain statements about margins.")}
         ${row("Also copy files to folder", `<input type="text" data-bind="output.copyTo" data-kind="text" value="${esc(out.copyTo || "")}" placeholder="optional">`)}
       </fieldset>
       <details class="log"><summary>Spec file (what the command line uses)</summary><pre>${esc(JSON.stringify((sync(), S.spec), null, 2))}</pre></details>`;
@@ -544,7 +603,7 @@ const BODY = {
       spg = (co * g.massG) / (cb * o.massG);
     }
     const procNote = rec.process ? `<p class="help">Checked for ${esc(rec.process.name)}, built along ${esc(rec.dfm?.buildDirection || "+Z")}.</p>` : "";
-    const files = r.files.filter(f => /-optimized\.(stl|3mf|obj|ply|glb|off)$/.test(f));
+    const files = r.files.filter(f => /-optimized\.(stl|3mf|step|obj|ply|glb|off)$/.test(f));
     const base = `/api/projects/${encodeURIComponent(S.project.id)}/runs/${r.id}/`;
     const hist = r.hist || {};
     return sel + `
@@ -560,6 +619,8 @@ const BODY = {
       <div class="btns">${files.map(f => `<a class="btn" href="${base}${encodeURIComponent(f)}?download=1">Download ${f.split(".").pop().toUpperCase()}</a>`).join("")}
         ${r.files.includes("report.html") ? `<a class="btn" href="${base}report.html" target="_blank" rel="noopener">Open report</a>` : ""}
         <button class="btn" data-reveal="${esc(r.dir)}">Open folder</button></div>
+      ${feaBlock(o.fea, o.massProperties)}
+      ${advancedBlock(rec.advanced, base, r.files)}
       <fieldset><legend>Notes</legend>
         <label class="check"><input type="checkbox" data-star ${hist.star ? "checked" : ""}><span>Star this run</span></label>
         <textarea data-note placeholder="What did you change, what did you print, how did it test?" style="min-height:70px">${esc(hist.note || "")}</textarea>
@@ -574,14 +635,50 @@ const BODY = {
   },
 };
 
+const v3 = v => "(" + v.map(x => fmt(x, 4)).join(", ") + ")";
+function feaBlock(f, mp) {
+  if (!f || f.error) return "";
+  const m = f.mesh, sv = f.solver;
+  const rows = Object.entries(f.cases).map(([c, r]) => `
+    <tr><th colspan="2">Load case ${esc(c)}</th></tr>
+    <tr><td>Applied force</td><td>${v3(r.appliedN)} N</td></tr>
+    ${Object.entries(r.reactionsN).map(([a, R]) => `<tr><td>Reaction at ${esc(a)}</td><td>${v3(R)} N</td></tr>`).join("")}
+    <tr><td>Equilibrium error</td><td>${r.equilibriumError.toExponential(1)}</td></tr>
+    <tr><td>URES max</td><td>${fmt(r.uresMaxMM, 4)} mm at ${v3(r.uresMaxAt)}</td></tr>
+    <tr><td>von Mises, design value</td><td>${fmt(r.vonMisesDesignMPa, 4)} MPa <span class="quiet">(max ${fmt(r.vonMisesMaxMPa, 4)}${r.vonMisesMaxAtSupportOrLoad ? " at a support or load" : ""})</span></td></tr>
+    <tr><td>P1 max / P3 min</td><td>${fmt(r.p1MaxMPa, 4)} / ${fmt(r.p3MinMPa, 4)} MPa</td></tr>
+    <tr><td>Factor of safety, design</td><td>${fmt(r.fosDesign, 3)} <span class="quiet">(${fmt(100 * r.volumeShareBelowFOS["2.0"] || 0, 3)} % of volume below 2)</span></td></tr>
+    <tr><td>Strain energy</td><td>${fmt(r.strainEnergyNmm, 4)} N·mm</td></tr>
+    ${r.zzRelativeError !== undefined ? `<tr><td>Stress error estimate (ZZ)</td><td>${fmt(100 * r.zzRelativeError, 3)} %</td></tr>` : ""}`).join("");
+  return `<details class="log"><summary>FEA study (as built)</summary>
+    <p class="help">${esc(f.analysis)}, ${m.elements.toLocaleString()} ${esc(m.elementType.split(":")[0])} elements at ${fmt(m.voxelMM)} mm,
+      ${m.dof.toLocaleString()} DOF. Solver residual ${sv.relativeResidual.toExponential(1)}, ${fmt(sv.seconds, 2)} s.</p>
+    <table class="kv">${rows}
+    ${mp ? `<tr><th colspan="2">Mass properties</th></tr><tr><td>Mass, volume</td><td>${fmt(mp.massG, 4)} g, ${fmt(mp.volumeCM3, 4)} cm³</td></tr>
+      <tr><td>Centre of gravity</td><td>${v3(mp.cogMM)} mm</td></tr><tr><td>Principal moments</td><td>${v3(mp.principalMomentsKgMM2)} kg·mm²</td></tr>` : ""}
+    </table></details>`;
+}
+function advancedBlock(adv, base, files) {
+  if (!adv) return "";
+  const T = { stress: "Stress distribution", fos: "Factor of safety", energy: "Load path concentration", reactions: "Support reactions", materials: "Same part in other materials" };
+  const imgs = Object.entries(T).filter(([k]) => adv.graphs[k] && files.includes(adv.graphs[k]))
+    .map(([k, t]) => `<figure class="graph"><figcaption>${t}</figcaption><img src="${base}${encodeURIComponent(adv.graphs[k])}" alt="${t}" loading="lazy"></figure>`).join("");
+  return `<details class="log" open><summary>How the part works</summary>
+    <ul class="insights">${adv.insights.map(t => `<li>${esc(t)}</li>`).join("")}</ul>${imgs}</details>`;
+}
 function anchorRow(a, i) {
   const m = S.gui.anchors[i] || {}, R = ROLE[a.role];
   const dofs = a.dofs ?? "xyz";
+  const face = outlineArea(m) > 0;
   const forces = a.role === "load" ? cases().map(c => {
     const f = (m.forces || {})[c] || { mag: 0, dir: "-z" };
+    const pr = face && f.unit === "MPa";
     return `<div class="force"><span class="cn">${esc(c)}</span>
-      <input type="number" data-bind="gui:anchors.${i}.forces.${c}.mag" value="${f.mag}" step="any" aria-label="Force in newtons" title="Force, N">
-      <select data-bind="gui:anchors.${i}.forces.${c}.dir" data-rerender>${DIRS.map(([v, t]) => `<option value="${v}" ${f.dir === v ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+      <input type="number" data-bind="gui:anchors.${i}.forces.${c}.mag" value="${f.mag}" step="any" aria-label="${pr ? "Pressure in MPa" : "Force in newtons"}" title="${pr ? "Pressure, MPa" : "Force, N"}">
+      ${face ? `<select data-bind="gui:anchors.${i}.forces.${c}.unit" data-kind="text" data-rerender title="Unit">
+        <option value="N" ${!pr ? "selected" : ""}>N</option><option value="MPa" ${pr ? "selected" : ""}>MPa</option></select>` : ""}
+      ${pr ? `<span class="quiet">pressure into the face (${fmt(outlineArea(m) * (+f.mag || 0))} N)</span>` :
+      `<select data-bind="gui:anchors.${i}.forces.${c}.dir" data-rerender>${DIRS.map(([v, t]) => `<option value="${v}" ${f.dir === v ? "selected" : ""}>${t}</option>`).join("")}</select>`}</div>
       ${f.dir === "custom" ? `<div class="xyz">${[0, 1, 2].map(k => `<input type="number" step="any" data-bind="gui:anchors.${i}.forces.${c}.custom.${k}" value="${(f.custom || [0, 0, 0])[k]}" title="F${"xyz"[k]}, N">`).join("")}</div>` : ""}`;
   }).join("") : "";
   return `<div class="anchor ${R.cls}">
@@ -589,7 +686,7 @@ function anchorRow(a, i) {
       <span><button class="icon" data-repick="${i}" title="Pick again">Re-pick</button><button class="icon" data-del="${i}" title="Remove">✕</button></span></div>
     <div class="what">${R.noun}: ${esc(m.label || "Region")}</div>
     ${a.role === "fixed" ? `<div class="row"><span>Held in</span><span class="dofs">${"xyz".split("").map(d => `<label><input type="checkbox" data-dof="${i}" value="${d}" ${dofs.includes(d) ? "checked" : ""}> ${d.toUpperCase()}</label>`).join("")}</span></div>` : ""}
-    ${a.role === "load" ? `<div class="help">Force in newtons, per load case</div>${forces}` : ""}
+    ${a.role === "load" ? `<div class="help">Force in newtons per load case${face ? ", or a pressure in MPa on the picked face" : ""}</div>${forces}` : ""}
     <div class="row"><span>Keep material around, mm</span>${num(`anchors.${i}.freezeMM`, a.freezeMM, 'min="0" step="0.5" placeholder="auto"')}</div>
     ${a.hole ? `<div class="row"><span>Room for the bolt head or nut at each end, mm</span>${num(`anchors.${i}.boltAccessMM`, a.boltAccessMM, 'min="0" step="1" placeholder="0"')}</div>` : ""}
     <details class="log"><summary>Region as numbers</summary><textarea data-region="anchors.${i}">${esc(JSON.stringify(a.region, null, 1))}</textarea></details>
@@ -774,8 +871,16 @@ function wire() {
       return;
     }
     if (el.dataset.proc) {
-      const k = el.dataset.proc, v = el.tagName === "SELECT" ? el.value : (el.value === "" ? undefined : +el.value);
-      setProc(k, v); save(); refreshHeads(); return refreshView();
+      const k = el.dataset.proc, v = el.tagName === "SELECT" ? (el.hasAttribute("data-num") ? +el.value : el.value) : (el.value === "" ? undefined : +el.value);
+      setProc(k, v); save(); refreshHeads();
+      if (el.hasAttribute("data-rerender")) return render();
+      return refreshView();
+    }
+    if (el.dataset.procSetup) {
+      const cur = new Set(effProcess().setups || ["+z"]);
+      if (el.checked) cur.add(el.dataset.procSetup); else cur.delete(el.dataset.procSetup);
+      if (!cur.size) { el.checked = true; return toast("Keep at least one setup."); }
+      setProc("setups", [...cur]); save(); return refreshView();
     }
     if (el.dataset.procBool) { setProc(el.dataset.procBool, el.checked); save(); return refreshView(); }
     if (el.dataset.procVol !== undefined) {

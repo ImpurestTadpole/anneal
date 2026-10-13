@@ -37,15 +37,28 @@ class Anchor:
             raise SpecError(f"{where}: dofs must use the letters x, y, z (for example 'xyz' or 'z').")
         self.dofs = ["xyz".index(c) for c in dofs]
         self.loads = {}
+        self.pressure = {}
         if self.role == "load":
-            loads = d.get("loads")
-            if not isinstance(loads, dict) or not loads:
-                raise SpecError(f"{where}: a load anchor needs 'loads': {{\"caseName\": [Fx, Fy, Fz]}} in newtons.")
+            loads = d.get("loads") or {}
+            pres = d.get("pressure") or {}
+            if not isinstance(loads, dict) or not isinstance(pres, dict) or not (loads or pres):
+                raise SpecError(f"{where}: a load anchor needs 'loads': {{\"caseName\": [Fx, Fy, Fz]}} in newtons, "
+                                f"or 'pressure': {{\"caseName\": p}} in MPa on a picked face.")
             for case, v in loads.items():
                 v = np.asarray(v, float)
                 if v.shape != (3,):
                     raise SpecError(f"{where}: load '{case}' must be three numbers [Fx, Fy, Fz] in newtons.")
                 self.loads[case] = v
+            if pres:
+                area, n = self._pressure_face(d, where)
+                for case, pv in pres.items():
+                    try:
+                        pv = float(pv)
+                    except (TypeError, ValueError):
+                        raise SpecError(f"{where}: pressure '{case}' must be one number in MPa (N/mm2).") from None
+                    F = -pv * area * n          # a positive pressure pushes into the face
+                    self.loads[case] = self.loads.get(case, np.zeros(3)) + F
+                    self.pressure[case] = {"MPa": pv, "areaMM2": area, "normal": n.tolist(), "forceN": F.tolist()}
         self.freeze_mm = None if d.get("freezeMM") is None else float(d["freezeMM"])
         self.solids, self.voids = [], []
         regions = []
@@ -75,6 +88,27 @@ class Anchor:
                 rhead = float(d.get("boltHeadD", 3.6 * rh)) / 2
                 self.voids.append(Cylinder(a - ax * acc, a, rhead))
                 self.voids.append(Cylinder(b, b + ax * acc, rhead))
+
+    @staticmethod
+    def _pressure_face(d, where):
+        """Area (mm2) and outward unit normal of the face a pressure acts on: from a picked face
+        (prism region: its outline triangles and normal) or from 'areaMM2' and 'normal' in the anchor."""
+        r = d.get("region") or {}
+        if "areaMM2" in d or "normal" in d:
+            if "areaMM2" not in d or "normal" not in d:
+                raise SpecError(f"{where}: a pressure needs both 'areaMM2' and 'normal' (outward, of the loaded face).")
+            area, n = float(d["areaMM2"]), np.asarray(d["normal"], float)
+        elif r.get("type") == "prism":
+            T = np.asarray(r["tris"], float).reshape(-1, 3, 2)
+            v0, v1 = T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]
+            area = float(0.5 * np.abs(v0[:, 0] * v1[:, 1] - v0[:, 1] * v1[:, 0]).sum())
+            n = np.asarray(r["normal"], float)
+        else:
+            raise SpecError(f"{where}: a pressure acts on a face. Pick a flat face in the app, or give 'areaMM2' "
+                            f"and 'normal' (the outward normal of the loaded face).")
+        if area <= 0 or n.shape != (3,) or np.linalg.norm(n) < 1e-12:
+            raise SpecError(f"{where}: the pressure face needs a positive area and a non-zero normal.")
+        return area, n / np.linalg.norm(n)
 
     def _feature(self, f, where):
         if not isinstance(f, dict) or len(f) != 1:
@@ -158,13 +192,28 @@ class Problem:
         self.limits = spec.get("limits", {})
         self.opt = spec.get("optimizer", {})
         self.out_opts = spec.get("output", {})
-        self.anchors = [Anchor(a, i) for i, a in enumerate(spec.get("anchors", []))]
+        from .fem import ELEMENTS, DEFAULT_ELEMENT
+        self.element = str(spec.get("solver", {}).get("element", DEFAULT_ELEMENT)).lower()
+        if self.element not in ELEMENTS:
+            raise SpecError(f"solver.element '{self.element}' is unknown. Use 'e9' (hex8 with incompatible modes, "
+                            f"the default) or 'hex8fi' (plain hex8, as in Anneal 0.3).")
+        self.anchors =[Anchor(a, i) for i, a in enumerate(spec.get("anchors", []))]
         if not any(a.role == "fixed" for a in self.anchors):
             raise SpecError("The spec has no fixed anchor. Add at least one anchor with \"role\": \"fixed\" "
                             "where the part is bolted or held.")
         if not any(a.role == "load" for a in self.anchors):
             raise SpecError("The spec has no load anchor. Add an anchor with \"role\": \"load\" and 'loads'.")
-        cases = sorted({c for a in self.anchors for c in a.loads})
+        grav = spec.get("gravity") or {}
+        if not isinstance(grav, dict):
+            raise SpecError("gravity must be {\"caseName\": [ax, ay, az]} in g (1 g = 9.81 m/s2), "
+                            "for example {\"weight\": [0, 0, -1]}.")
+        self.gravity = {}
+        for c, v in grav.items():
+            v = np.asarray(v, float)
+            if v.shape != (3,):
+                raise SpecError(f"gravity '{c}' must be three numbers [ax, ay, az] in g, for example [0, 0, -1].")
+            self.gravity[c] = v
+        cases = sorted({c for a in self.anchors for c in a.loads} | set(self.gravity))
         lc = spec.get("loadCases", {})
         unknown = set(lc) - set(cases)
         if unknown:
@@ -224,6 +273,8 @@ class Problem:
         else:
             raise SpecError(f"designSpace type '{dtype}' is unknown. Use model, hull, bounds or box.")
 
+        self.space_mesh = dmesh            # exact design space, for sharp edges (None: the box below)
+        self.space_box = (np.array(lo, float), np.array(hi, float))
         for s in solids:
             slo, shi = s.bounds()
             lo, hi = np.minimum(lo, slo), np.maximum(hi, shi)
@@ -354,6 +405,30 @@ class Problem:
                         np.add.at(F[c], 3 * sel + d, v[d] / sel.size)
         fixed = np.unique(np.concatenate(fixed)) if fixed else np.zeros(0, int)
         return fixed, F, info
+
+    G_MS2 = 9.80665
+
+    def gravity_coef(self):
+        """Weight in N of one full voxel at 1 g (density in g/cm3 = 1e-6 kg/mm3)."""
+        return float(self.material["density"]) * 1e-6 * self.grid.h ** 3 * self.G_MS2
+
+    def body_loads(self, fill):
+        """Self-weight / acceleration loads {case: nodal force vector} for a fill field (flat, all
+        elements): each voxel's weight goes in equal parts to its 8 nodes."""
+        g = self.grid
+        out = {}
+        if not self.gravity:
+            return out
+        e = np.flatnonzero(fill > 0)
+        en = g.element_nodes(e)
+        wt = self.gravity_coef() * fill[e] / 8.0
+        for c, a in self.gravity.items():
+            F = np.zeros(3 * g.nnode)
+            for d in range(3):
+                if a[d]:
+                    np.add.at(F, 3 * en.ravel() + d, np.repeat(wt * a[d], 8))
+            out[c] = F
+        return out
 
     def load_nodes(self, active):
         g = self.grid

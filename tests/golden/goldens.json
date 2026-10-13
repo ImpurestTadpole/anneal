@@ -1,0 +1,34 @@
+{
+ "hex8fi": {
+  "cantilever.anneal.json": {
+   "massG": 12.792464444444445,
+   "maxDisplacementMM": 0.17993385025734995,
+   "safetyFactor": 3.552242077728067,
+   "iterations": 40,
+   "amgBuilds": 12
+  },
+  "plate_hole.anneal.json": {
+   "massG": 10.57491352151363,
+   "maxDisplacementMM": 0.25523972409624573,
+   "safetyFactor": 3.633856479013415,
+   "iterations": 40,
+   "amgBuilds": 11
+  }
+ },
+ "e9": {
+  "cantilever.anneal.json": {
+   "massG": 12.83914,
+   "maxDisplacementMM": 0.15864484393520661,
+   "safetyFactor": 3.5084666259919404,
+   "iterations": 40,
+   "amgBuilds": 12
+  },
+  "plate_hole.anneal.json": {
+   "massG": 10.585197965958072,
+   "maxDisplacementMM": 0.2516184660673496,
+   "safetyFactor": 3.5467971771529947,
+   "iterations": 40,
+   "amgBuilds": 11
+  }
+ }
+}

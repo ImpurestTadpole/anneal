@@ -49,9 +49,12 @@ class Filter:
 
 def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
          iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX,
-         probe=None, D=None, mfilter=None):
+         probe=None, D=None, mfilter=None, element=None, gravity=None):
+    """gravity: optional (coef, {case: [ax, ay, az]}) for self-weight: coef is the weight in N of one full
+    voxel at 1 g. The weight then follows the design (load = coef * fill * xPhys * a per voxel), and its
+    sensitivity 2 u_e . dF_e/dx is added to the compliance sensitivity."""
     t_start = time.time()
-    fem = FEM(grid, active, fixed, nu, log=log, D=D)
+    fem = FEM(grid, active, fixed, nu, log=log, D=D, **({"element": element} if element else {}))
     act = fem.act
     phi = fill[act]
     frz = frozen[act]
@@ -61,8 +64,11 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
     filt = Filter(grid, active, r_vox)
     cases = list(loads)
     Fr = [fem.reduce_load(loads[c]) for c in cases]
+    Fext = [f.copy() for f in Fr]
+    gcoef, gacc = gravity if gravity else (0.0, {})
+    gacc = {c: np.asarray(a, float) for c, a in gacc.items() if c in cases and np.any(a)}
     w = np.array([weights[c] for c in cases])
-    if all(np.allclose(f, 0) for f in Fr):
+    if all(np.allclose(f, 0) for f in Fr) and not gacc:
         raise ValueError("All loads are zero after mapping onto the grid. Check the load anchors' regions.")
 
     Vtot = phi.sum()
@@ -134,6 +140,12 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         xPhys, back = physical(x, with_grad=True)
         Ee = E0 * phi * (EMIN + xPhys ** p * (1 - EMIN))
         K = fem.assemble(Ee)
+        for ci, c in enumerate(cases):     # self-weight follows the current design
+            if c in gacc:
+                wt = gcoef * phi * xPhys / 8.0
+                fb = np.bincount(fem.edof.ravel(), weights=(wt[:, None] * np.tile(gacc[c], 8)).ravel(),
+                                 minlength=3 * grid.nnode)
+                Fr[ci] = Fext[ci] + fem.reduce_load(fb)
         last = fem.cg_iters[-1] if fem.cg_iters else None
         rebuild = base_iters is None or (last is not None and last > 1.6 * base_iters)
         U = fem.solve(K, Fr, x0_list=None if U[0] is None else U, rebuild=rebuild, rtol=1e-6)
@@ -141,9 +153,13 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
             base_iters = fem.cg_iters[-1]
         cs = np.array([f @ u for f, u in zip(Fr, U)])
         dce = []
-        for u in U:
-            ce = fem.element_energy(fem.expand(u))
-            dce.append(-p * xPhys ** (p - 1) * (1 - EMIN) * E0 * phi * ce)
+        for c, u in zip(cases, U):
+            uf = fem.expand(u)
+            ce = fem.element_energy(uf)
+            d = -p * xPhys ** (p - 1) * (1 - EMIN) * E0 * phi * ce
+            if c in gacc:   # design-dependent load: + 2 u_e . dF_e/dxPhys
+                d = d + 2 * gcoef * phi / 8.0 * (uf[fem.edof] @ np.tile(gacc[c], 8))
+            dce.append(d)
         if c0 is None:
             c0 = cs.copy()
         if combine == "sum" or len(cases) == 1:

@@ -22,6 +22,43 @@ def _principal(sig):
     return np.linalg.eigvalsh(S)            # ascending: P3, P2, P1
 
 
+def nodal_stress(fem, sig, Ee):
+    """Recovered (smoothed) nodal stress: the stiffness-weighted average of the element-centre stresses
+    around each node (partly filled voxels count less). Returns (nnode, 6) and the node weights."""
+    nn = fem.grid.nnode
+    w = np.repeat(np.asarray(Ee, float), 8)
+    idx = fem.edof[:, 0::3].ravel() // 3
+    W = np.bincount(idx, weights=w, minlength=nn)
+    S = np.stack([np.bincount(idx, weights=w * np.repeat(sig[:, k], 8), minlength=nn) for k in range(6)], 1)
+    return S / np.maximum(W, 1e-300)[:, None], W
+
+
+def zz_error(fem, sig, Ee, E0):
+    """Zienkiewicz-Zhu (1987) error estimate in the energy norm. The recovered stress sigma* is the
+    trilinear field through the nodal averages; per element, eta_e^2 = integral of
+    (sigma* - sigma_h)^T C^-1 (sigma* - sigma_h) over the voxel (2x2x2 Gauss points). Returns the
+    element indicators eta_e (N mm)^0.5, the global relative error eta / sqrt(U + eta^2) and sigma* at
+    the nodes."""
+    from .fem import _dN, LOCAL
+    Sn, _ = nodal_stress(fem, sig, Ee)
+    nodes = fem.edof[:, 0::3] // 3                 # (ne, 8)
+    Dinv = np.linalg.inv(fem.D)
+    scale = np.asarray(Ee, float) / E0             # local modulus share: C = scale E0 D
+    g = 1 / np.sqrt(3)
+    h3 = fem.grid.h ** 3
+    eta2 = np.zeros(len(sig))
+    s = 2 * LOCAL - 1
+    for xi in (-g, g):
+        for et in (-g, g):
+            for ze in (-g, g):
+                N = (1 + s[:, 0] * xi) * (1 + s[:, 1] * et) * (1 + s[:, 2] * ze) / 8
+                d = np.einsum("a,eak->ek", N, Sn[nodes]) - sig
+                eta2 += np.einsum("ek,kl,el->e", d, Dinv, d) / (E0 * np.maximum(scale, 1e-9)) * h3 / 8
+    U2 = np.einsum("ek,kl,el->e", sig, Dinv, sig) / (E0 * np.maximum(scale, 1e-9)) * h3   # 2 x strain energy
+    rel = float(np.sqrt(eta2.sum() / max(U2.sum() + eta2.sum(), 1e-300)))
+    return np.sqrt(eta2), rel, Sn
+
+
 def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, seconds, yield_mpa, E0):
     g = prob.grid
     used = np.unique(g.element_nodes(fem.act))
@@ -32,7 +69,9 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
     mat = prob.material
     out = {"label": label, "analysis": "Linear static",
            "material": {k: mat.get(k) for k in ("name", "E", "nu", "density", "yield", "Ez", "zStrengthFactor") if mat.get(k) is not None},
-           "mesh": {"elementType": "Hex8: 8-node brick, trilinear, 2x2x2 Gauss points (voxel)",
+           "mesh": {"elementType": ("Hex8-E9: 8-node brick with 9 incompatible modes (Wilson-Taylor), 2x2x2 Gauss points (voxel)"
+                                   if getattr(fem, "element", "hex8fi") == "e9" else
+                                   "Hex8: 8-node brick, trilinear, 2x2x2 Gauss points (voxel)"),
                     "elements": int(fem.act.size), "partialVoxels": partial, "voxelMM": g.h,
                     "nodes": int(used.size), "dof": int(3 * used.size), "freeDof": int(fem.nfree),
                     "nonzeros": int(fem.nnz)},
@@ -71,6 +110,11 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
         energy = float(0.5 * F_full[c] @ u)
         vol = Ee / E0 * g.h ** 3
         fos = yield_mpa / np.maximum(vm, 1e-12)
+        # stress recovery and error estimate use the stress in the material at its local stiffness
+        sig_l = sig * (np.asarray(Ee) / E0)[:, None]
+        eta, rel, Sn = zz_error(fem, sig_l, Ee, E0)
+        vm_n = _vm(nodal_stress(fem, sig, Ee)[0][used])
+        ie = int(np.argmax(eta))
         out["cases"][c] = {
             "appliedN": applied.tolist(), "reactionsN": reac, "reactionTotalN": tot.tolist(),
             "equilibriumError": eq, "relativeResidual": res,
@@ -83,6 +127,10 @@ def study(prob, fem, K, Ee, cases, F_full, U_red, anchor_nodes, keep, label, sec
             "strainEnergyNmm": energy, "equivalentStrainMax": float(estrn.max()),
             "fosMin": float(fos.min()), "fosDesign": float(yield_mpa / design) if design > 0 else float("inf"),
             "volumeShareBelowFOS": {k: float(vol[fos < k].sum() / vol.sum()) for k in (1.0, 1.5, 2.0, 3.0)},
+            "vonMisesNodalMaxMPa": float(vm_n.max()),
+            "zzRelativeError": rel, "zzMaxAt": centres[ie].tolist(),
+            "zzMaxAtSupportOrLoad": bool(not keep[ie]),
+            "zzShareTop5pct": float(np.sort(eta ** 2)[::-1][:max(1, len(eta) // 20)].sum() / max((eta ** 2).sum(), 1e-300)),
         }
     out["solver"]["relativeResidual"] = worst_res
     return out
@@ -124,6 +172,10 @@ def report_lines(fea, mp=None):
                  + f"; design value {r['vonMisesDesignMPa']:.4g} MPa (99.5th percentile away from supports and loads)")
         L.append(f"    P1 max {r['p1MaxMPa']:.4g} MPa, P3 min {r['p3MinMPa']:.4g} MPa, Tresca max {r['trescaMaxMPa']:.4g} MPa; "
                  f"ESTRN max {r.get('equivalentStrainMax', float('nan')):.3e}; strain energy {r['strainEnergyNmm']:.4g} N·mm")
+        if "zzRelativeError" in r:
+            L.append(f"    Stress error estimate (Zienkiewicz-Zhu, energy norm) {100 * r['zzRelativeError']:.1f} %; largest at "
+                     f"{_v(r['zzMaxAt'])}" + (" (a support or load)" if r["zzMaxAtSupportOrLoad"] else "")
+                     + f"; nodal (averaged) von Mises max {r['vonMisesNodalMaxMPa']:.4g} MPa")
         sh = r["volumeShareBelowFOS"]
         L.append(f"    FOS min {r['fosMin']:.3g} (design {r['fosDesign']:.3g}); volume below FOS 1: {100 * sh[1.0]:.2f} %, "
                  f"below 2: {100 * sh[2.0]:.2f} %, below 3: {100 * sh[3.0]:.2f} %")

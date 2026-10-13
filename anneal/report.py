@@ -95,6 +95,102 @@ def _f(v, d=3):
     return str(v)
 
 
+def _v3(x):
+    return "(" + ", ".join(f"{t:.4g}" for t in x) + ")"
+
+
+def _fea_section(built):
+    fea = built.get("fea") or {}
+    if not fea or "error" in fea:
+        return ""
+    m, s = fea["mesh"], fea["solver"]
+    head = (f"<p class='note'>{H.escape(fea['analysis'])}, small displacement, linear elastic. Mesh: {m['elements']:,} "
+            f"{H.escape(m['elementType'])} at {m['voxelMM']:g} mm ({m['partialVoxels']:,} partly filled), {m['nodes']:,} nodes, "
+            f"{m['dof']:,} DOF. Solver: {H.escape(s['method'])}, relative residual {s['relativeResidual']:.1e}, "
+            f"{s['seconds']:.1f} s.</p>")
+    rows = []
+    for c, r in fea["cases"].items():
+        reac = "<br>".join(f"{H.escape(a)}: {_v3(R)} N" for a, R in r["reactionsN"].items())
+        sh = r["volumeShareBelowFOS"]
+        zz = f"{100 * r['zzRelativeError']:.1f} %" if "zzRelativeError" in r else "–"
+        rows.append(f"<tr><td>{H.escape(c)}</td><td>{_v3(r['appliedN'])} N</td><td>{reac}<br><span class='note'>"
+                    f"equilibrium error {r['equilibriumError']:.1e}</span></td>"
+                    f"<td>{r['uresMaxMM']:.4g} mm<br><span class='note'>at {_v3(r['uresMaxAt'])}</span></td>"
+                    f"<td>{r['vonMisesDesignMPa']:.4g} MPa<br><span class='note'>max {r['vonMisesMaxMPa']:.4g} at "
+                    f"{_v3(r['vonMisesMaxAt'])}{' (support/load)' if r['vonMisesMaxAtSupportOrLoad'] else ''}</span></td>"
+                    f"<td>{r['p1MaxMPa']:.4g} / {r['p3MinMPa']:.4g} MPa</td>"
+                    f"<td>{r['fosDesign']:.3g}<br><span class='note'>below 1: {100 * sh[1.0]:.2f} %, below 2: {100 * sh[2.0]:.1f} %</span></td>"
+                    f"<td>{r['strainEnergyNmm']:.4g} N·mm</td><td>{zz}</td></tr>")
+    mp = built.get("massProperties")
+    mp_html = "" if not mp else (f"<p class='note'>Mass properties of the exported solid: {mp['massG']:.4g} g, "
+                                 f"{mp['volumeCM3']:.4g} cm³, surface {mp['areaMM2']:.5g} mm², centre of gravity "
+                                 f"{_v3(mp['cogMM'])} mm, principal moments {_v3(mp['principalMomentsKgMM2'])} kg·mm².</p>")
+    return (f"<h2>FEA study (as built)</h2>{head}<div class='scroll'><table><tr><th>Load case</th><th>Applied</th>"
+            f"<th>Reactions</th><th>URES max</th><th>von Mises (design)</th><th>P1 max / P3 min</th><th>FOS</th>"
+            f"<th>Strain energy</th><th>Stress error (ZZ)</th></tr>{''.join(rows)}</table></div>{mp_html}"
+            f"<p class='note'>Design von Mises: 99.5th percentile away from supports and loads. URES: resultant "
+            f"displacement. Stress error: Zienkiewicz-Zhu estimate in the energy norm; it halves when the voxel size halves.</p>")
+
+
+def _advanced_section(out_dir, adv):
+    if not adv:
+        return ""
+    titles = {"stress": "Stress distribution", "fos": "Factor of safety", "energy": "Load path concentration",
+              "reactions": "Support reactions", "materials": "Same geometry in other materials"}
+    imgs = []
+    for k, t in titles.items():
+        f = adv["graphs"].get(k)
+        if f and os.path.exists(os.path.join(out_dir, f)):
+            with open(os.path.join(out_dir, f), "rb") as fh:
+                b = base64.b64encode(fh.read()).decode()
+            imgs.append(f"<h3 style='font-size:14px;margin:18px 0 6px'>{t}</h3><img class='plot' "
+                        f"src='data:image/png;base64,{b}' alt='{t}'>")
+    li = "".join(f"<li>{H.escape(t)}</li>" for t in adv["insights"])
+    mats = "".join(f"<tr><td>{H.escape(r['name'])}{' (this run)' if r['current'] else ''}</td><td>{r['massG']:.4g}</td>"
+                   f"<td>{r['displacementMM']:.4g}</td><td>{r['safetyFactor']:.3g}</td></tr>" for r in adv.get("materials", []))
+    return (f"<h2>How the part works</h2><ul>{li}</ul>{''.join(imgs)}"
+            + (f"<div class='scroll'><table><tr><th>Material</th><th>Mass, g</th><th>Max displacement, mm</th>"
+               f"<th>Safety factor</th></tr>{mats}</table></div><p class='note'>Same geometry and loads; displacement "
+               f"scales with 1/E and stress is unchanged (linear model). Not re-optimized.</p>" if mats else ""))
+
+
+def _assumptions(prob, built, record):
+    el = getattr(prob, "element", "hex8fi")
+    aniso = getattr(prob, "D", None) is not None
+    ass = [("Analysis", "linear static, small displacement, linear elastic material up to yield"),
+           ("Element", "hex8 with 9 incompatible modes (e9): no shear locking" if el == "e9" else
+            "plain hex8 (hex8fi): displacement corrected for shear locking"),
+           ("Material", "transversely isotropic (print-aware), Hill strength" if aniso else "isotropic, von Mises strength"),
+           ("Supports", "rigid: the held faces cannot move in the held directions (bolts and seats are not modelled)"),
+           ("Loads", "each load spread in equal parts over the nodes of its region"
+            + ("; pressures as the equivalent force on the picked face" if any(a.pressure for a in prob.anchors) else "")
+            + ("; self-weight from the as-built geometry" if getattr(prob, "gravity", None) else "")),
+           ("Geometry", "the exported surface, voxelized again at the run's voxel size (as-built re-solve)")]
+    nm = ["contact and friction between parts", "bolt preload", "plasticity, creep and fracture", "fatigue",
+          "temperature and thermal stress", "residual stress from manufacture", "dynamic response (except the "
+          "equivalent-static impact check)"]
+    if not aniso and prob.process and prob.process.get("method") != "machining":
+        nm.append("layer anisotropy (turn on physics.anisotropic for FDM)")
+    if "nonlinear" not in built:
+        nm.append("large deformation (physics.nonlinear runs CalculiX)")
+    sol = record.get("solver") or {}
+    val = sol.get("validation") or {}
+    gate = ("passed the validation gate on " + str(val.get("createdUTC")) if val.get("passed") else
+            "FAILED the validation gate" if val.get("passed") is False else
+            "has not been validated on this computer (run: python -m anneal validate)")
+    eqs = [r.get("equilibriumError") for r in ((built.get("fea") or {}).get("cases") or {}).values()]
+    ver = [f"Solver build {str(sol.get('solverSha256', ''))[:12]} (Anneal {sol.get('anneal', '')}, element {el}) {gate}.",
+           "Results come from re-solving the exported surface, not the optimizer's density field."]
+    if eqs and all(e is not None for e in eqs):
+        ver.append(f"Equilibrium: reactions balance the applied loads to {max(eqs):.1e} (relative).")
+    tr = "".join(f"<tr><td>{H.escape(a)}</td><td>{H.escape(b)}</td></tr>" for a, b in ass)
+    return (f"<h2>Assumptions</h2><div class='scroll'><table>{tr}</table></div>"
+            f"<h2>Not modelled</h2><ul>{''.join(f'<li>{H.escape(t)}</li>' for t in nm)}</ul>"
+            f"<h2>Verification</h2><ul>{''.join(f'<li>{H.escape(t)}</li>' for t in ver)}</ul>"
+            f"<p class='note'>Material values in the library are typical datasheet figures; replace them with your own "
+            f"coupon data. Check critical parts with an independent analysis or a test.</p>")
+
+
 def write(out_dir, prob, res, mesh, built, original, chk, thick, record):
     stl_b64 = base64.b64encode(mesh.export(file_type="stl")).decode()
     orig_b64 = ""
@@ -142,6 +238,9 @@ def write(out_dir, prob, res, mesh, built, original, chk, thick, record):
     verdict = ("All checks pass." if all_ok else "Some checks fail — see the fixes below before you print.") if chk else \
         "No limits were given, so nothing was checked against a target."
 
+    fea_html = _fea_section(built)
+    adv_html = _advanced_section(out_dir, record.get("advanced"))
+    notes_html = _assumptions(prob, built, record)
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{H.escape(prob.name)} — Anneal report</title>
 <style>
@@ -183,6 +282,8 @@ Peak stress is the 99.5th percentile at element centres, away from support and l
 supports make stress unbounded in any linear model. Treat it as an estimate and check critical parts with an
 independent analysis.</p>
 
+{fea_html}
+{adv_html}
 <h2>Convergence</h2><img class="plot" src="{conv}" alt="Convergence of objective, grey fraction and change">
 <p class="note">Chosen pass: {opt['iterations']} iterations in {opt['seconds']:.0f} s, {opt['amgBuilds']} multigrid builds.
 The objective rises while the penalty ramps up (expected), then falls. Later passes start from the previous design at full penalty.</p>
@@ -194,9 +295,7 @@ The objective rises while the penalty ramps up (expected), then falls. Later pas
 <div class="scroll"><table><tr><th>Value</th><th>Setting</th></tr>{derived_rows}</table></div>
 
 <h2>Files</h2><ul>{files}</ul>
-<p class="note">Model limits: linear elastic, isotropic, small displacement, static loads. FDM parts are anisotropic;
-Z strength can be under half the listed yield. Material values are typical datasheet figures — replace them with
-your own coupon data in <code>materials.py</code>.</p>
+{notes_html}
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
