@@ -402,4 +402,38 @@ export class Viewer {
     s.position.copy(tail.clone().sub(dir.clone().multiplyScalar(h * 0.8)));
     this.overlay.add(s);
   }
+
+  // Torque glyph: a curved arrow (270 degrees) about the torque axis, turning by the right-hand rule,
+  // and a short line on the axis. moment = [Mx, My, Mz] in N·m.
+  torque(centre, moment, label) {
+    const m = new THREE.Vector3(...moment);
+    if (!m.length()) return;
+    const ax = m.clone().normalize(), c = new THREE.Vector3(...centre);
+    const ref = Math.abs(ax.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+    const u = new THREE.Vector3().crossVectors(ref, ax).normalize();
+    const v = new THREE.Vector3().crossVectors(ax, u);              // u x v = ax: growing angle turns about +ax
+    const r = this.size * 0.07, end = 1.5 * Math.PI, n = 48;
+    const at = t => c.clone().add(u.clone().multiplyScalar(r * Math.cos(t))).add(v.clone().multiplyScalar(r * Math.sin(t)));
+    const pts = [];
+    for (let k = 0; k <= n; k++) pts.push(at(end * k / n));
+    const col = cssColor("--push");
+    const lineMat = () => new THREE.LineBasicMaterial({ color: col, depthTest: false, transparent: true });
+    const g = new THREE.Group();
+    g.userData.kind = "torque";
+    const arc = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat());
+    const axis = new THREE.Line(new THREE.BufferGeometry().setFromPoints([c.clone().sub(ax.clone().multiplyScalar(r * 0.8)),
+      c.clone().add(ax.clone().multiplyScalar(r * 1.3))]), lineMat());
+    const tan = u.clone().multiplyScalar(-Math.sin(end)).add(v.clone().multiplyScalar(Math.cos(end))).normalize();
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(r * 0.16, r * 0.45, 16),
+      new THREE.MeshBasicMaterial({ color: col, depthTest: false, transparent: true }));
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan);
+    cone.position.copy(at(end)).add(tan.clone().multiplyScalar(r * 0.2));
+    for (const part of [arc, axis, cone]) { part.renderOrder = 6; g.add(part); }
+    this.overlay.add(g);
+    const s = labelSprite(label, "#" + col.getHexString());
+    const h = this.size * 0.035;
+    s.scale.set(h * s.userData.aspect, h, 1);
+    s.position.copy(c).add(ax.clone().multiplyScalar(r * 1.3 + h * 0.8));
+    this.overlay.add(s);
+  }
 }
