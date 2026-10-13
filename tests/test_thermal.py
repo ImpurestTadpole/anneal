@@ -297,6 +297,46 @@ def test_mechanical_part_of_a_thermal_case_equals_the_case_without_temperature(t
     assert b["peakStressMechanicalMPa"] == pytest.approx(a["peakStressMPa"], rel=1e-6)
 
 
+# ------------------------------------------------------------------ H7: buckling with thermal pre-stress
+@pytest.mark.parametrize("element", ["e9", "hex8fi"])
+def test_heated_column_held_at_both_ends_buckles_at_the_euler_temperature(element):
+    """Column 4 x 4 x 60 voxels, both ends held axially (every end node in z: the end faces stay plane, so the
+    ends cannot turn) with the centre line held sideways at both ends, heated by 1 K, no mechanical load.
+    That is a clamped-clamped column whose sides can expand freely (no extra lateral stress at the ends).
+    The buckling factor is the critical temperature rise dT_cr = pi^2 I / (alpha A L_eff^2), L_eff = 0.5 L,
+    with the shear correction of a short column (Engesser): / (1 + P_e / (5/6 G A)), here 4.4 %.
+    Measured (factor / shear-corrected Euler): L = 60: e9 0.9922, hex8fi raw 1.0248;
+    L = 120: e9 0.9979, hex8fi 1.0313 (against plain Euler at L = 120: e9 0.987, the 1.1 % shear effect).
+    Tolerance as V7: e9 within 1 %; hex8fi times the locking factor (as run.py reports it) conservative,
+    0 to -3 %. With the ends held in all directions instead, the lateral expansion is also held there and
+    the factor falls a further 1.3 % (e9 0.936 of plain Euler): that is a different problem, not an error."""
+    from anneal.run import locking_factor
+    from anneal.physics import buckling
+    a, L, E, alpha = 4, 60, 1000.0, 1e-5
+    g = Grid((a, a, L), 1.0, (0, 0, 0))
+    p = g.node_coords(np.arange(g.nnode))
+    ends = np.flatnonzero((p[:, 2] < 1e-9) | (p[:, 2] > L - 1e-9))
+    axis = np.flatnonzero((abs(p[:, 0] - a / 2) < 1e-9) & (abs(p[:, 1] - a / 2) < 1e-9)
+                          & ((p[:, 2] < 1e-9) | (p[:, 2] > L - 1e-9)))
+    twist = np.flatnonzero((p[:, 0] < 1e-9) & (abs(p[:, 1] - a / 2) < 1e-9) & (p[:, 2] < 1e-9))
+    fixed = list(3 * ends + 2) + list(3 * axis) + list(3 * axis + 1) + list(3 * twist + 1)
+    fem = FEM(g, np.ones(g.nelem, bool), fixed, 0.3, element=element)
+    m = thermal_strain(alpha)
+    Ee = np.full(g.nelem, E)
+    K = fem.assemble(Ee)
+    u = fem.solve(K, [fem.reduce_load(fem.thermal_load(fem.thermal_vector(m), Ee * 1.0))], rtol=1e-12)[0]
+    lam, _ = buckling(fem, K, u, Ee, eps0=m)
+    A, I, nu = a * a, a ** 4 / 12, 0.3
+    Pe = np.pi ** 2 * E * I / (0.5 * L) ** 2
+    exact = Pe / (E * A * alpha) / (1 + Pe / (5 / 6 * E / (2 * (1 + nu)) * A))
+    r = lam[0] / exact
+    if element == "e9":
+        assert abs(r - 1) < 0.01, r
+    else:
+        rc = r * locking_factor(a, "hex8fi")
+        assert -0.03 <= rc - 1 <= 0.0, rc
+
+
 # ------------------------------------------------------------------ H4: derating
 def test_derate_interpolates_the_table_linearly():
     from anneal.physics import derate

@@ -348,11 +348,21 @@ def buckling_check(prob, fill, lf, log):
     E0 = prob.material["E"]
     Ee = E0 * fill[fem.act]
     K = fem.assemble(Ee)
+    th = _thermal_setup(prob, fem, Ee) if getattr(prob, "t_case", None) else None
     out = {}
     for c in prob.cases:
         t = time.time()
-        u = fem.solve(K, [fem.reduce_load(F[c])], rtol=1e-9)[0]
-        lam, _ = buckling(fem, K, u, Ee)
+        tc = th.get(c) if th else None
+        if tc is None:
+            u = fem.solve(K, [fem.reduce_load(F[c])], rtol=1e-9)[0]
+            lam, _ = buckling(fem, K, u, Ee)
+        else:              # pre-stress of the case: mechanical plus thermal, at the derated stiffness
+            fE = tc["fE"]
+            u = fem.solve(K, [fem.reduce_load(F[c] + tc["f_th"]) / fE], rtol=1e-9)[0]
+            if not np.any(u):
+                out[c] = {"raw": float("inf"), "corrected": float("inf"), "seconds": 0.0}
+                continue
+            lam, _ = buckling(fem, K if fE == 1.0 else K * fE, u, Ee * fE, eps0=tc["eps0"])
         raw = float(lam[0]) if lam.size else float("inf")
         out[c] = {"raw": raw, "corrected": raw * lf, "seconds": time.time() - t}
         log(f"  buckling, load case {c}: factor {raw * lf:.3g} (raw {raw:.3g} x locking {lf:.3f}), "

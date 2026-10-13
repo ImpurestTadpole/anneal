@@ -159,10 +159,13 @@ def stress_stiffness_parts(h):
     return [np.kron(m, np.eye(3)) for m in G]
 
 
-def buckling(fem, K, u_red, E_scale, n_modes=4, tol=1e-6):
+def buckling(fem, K, u_red, E_scale, n_modes=4, tol=1e-6, eps0=None):
     """Buckling load factors (ascending, positive only) and modes for the load that gave u_red.
-    E_scale: per-element modulus scale used for the stress (as in fem.stress)."""
-    sig = fem.stress(fem.expand(u_red), E_scale)
+    E_scale: per-element modulus scale used for the stress (as in fem.stress).
+    eps0 (optional): thermal strain of the case; the pre-stress is then E D (B u - eps0), so a heated part
+    that is held can buckle with no mechanical load. The factor scales the loads and the temperature
+    change together."""
+    sig = fem.stress(fem.expand(u_red), E_scale, eps0)
     parts = stress_stiffness_parts(fem.grid.h)
     Ks = sum(fem.assemble_matrix(parts[c], sig[:, c]) for c in range(6))
     if fem.M is None:
