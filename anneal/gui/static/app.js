@@ -29,7 +29,7 @@ const ROLE = {
 };
 const DIRS = [["-z", "Down (−Z)"], ["+z", "Up (+Z)"], ["+x", "+X"], ["-x", "−X"], ["+y", "+Y"], ["-y", "−Y"],
   ["into", "Into the surface"], ["out", "Away from the surface"], ["custom", "Custom vector"]];
-const FORMATS = ["stl", "3mf", "obj", "ply", "glb"];
+const FORMATS = ["stl", "3mf", "step", "obj", "ply", "glb"];
 
 const S = {
   page: "home", project: null, spec: null, gui: null, open: 0, arm: null,
@@ -483,7 +483,9 @@ const BODY = {
       <fieldset><legend>Output</legend>
         <div class="row wide"><span class="quiet">File formats</span><div class="dofs">
           ${FORMATS.map(f => `<label><input type="checkbox" data-format="${f}" ${out.formats.includes(f) ? "checked" : ""} ${f === "stl" ? "disabled" : ""}> ${f.toUpperCase()}</label>`).join("")}</div></div>
-        <p class="help">STL is always written. 3MF opens straight in Bambu Studio and other slicers.</p>
+        <p class="help">STL is always written. 3MF opens straight in Bambu Studio and other slicers. STEP opens as a
+          solid body in SolidWorks, Fusion and FreeCAD (faceted; needs the STEP add-on).</p>
+        ${out.formats.includes("step") ? row("STEP faces", num("output.stepFaces", out.stepFaces ?? 20000, 'min="1000" step="1000" data-kind="int"'), "Fewer faces = smaller file. 20 000 keeps the shape within a fraction of a millimetre.") : ""}
         ${row("Smoothing passes", num("output.smoothing", out.smoothing ?? 10, 'min="0" max="60" data-kind="int"'))}
         ${row("Surface detail", `<select data-bind="output.upsample" data-kind="int">
           ${[[1, "Voxel size"], [2, "2× finer"], [3, "3× finer (large files)"]].map(([v, t]) => `<option value="${v}" ${+out.upsample === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
@@ -807,7 +809,7 @@ function wire() {
       const f = el.dataset.format, out = S.spec.output;
       out.formats = el.checked ? [...new Set([...out.formats, f])] : out.formats.filter(x => x !== f);
       if (!out.formats.includes("stl")) out.formats.unshift("stl");
-      save(); return refreshHeads();
+      save(); if (f === "step") render(); return refreshHeads();
     }
     if (el.dataset.goal !== undefined) {
       if (el.value === "mass") S.spec.objective.minimise = "mass"; else delete S.spec.objective.minimise;

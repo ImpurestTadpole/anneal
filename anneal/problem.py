@@ -191,7 +191,7 @@ class Problem:
         if isinstance(ds, str):
             ds = {"type": ds}
         dtype = ds.get("type")
-        solids = [s for a in self.anchors for s in a.solids] + self.keep
+        solids = [s for a in self.anchors for s in a.solids]   # bore / pad features: may add material
         voids = [v for a in self.anchors for v in a.voids] + self.keepout
 
         if dtype in ("model", "hull", "bounds") and self.mesh is None:
@@ -259,6 +259,13 @@ class Problem:
         solid_fill = np.zeros(grid.nelem)
         for s in solids:
             solid_fill = np.maximum(solid_fill, fill_fraction(s, centres, h))
+        # material the model already has: "keep" regions and the material frozen around supports and
+        # loads come only from it, so neither can add a bubble to the part (a keep region or freeze
+        # zone bigger than the feature used to leave one)
+        have = voxel_fill(self.mesh, grid) if (self.mesh is not None and dtype != "model") else fill.copy()
+        if self.keep:
+            for s in self.keep:
+                solid_fill = np.maximum(solid_fill, np.minimum(fill_fraction(s, centres, h), have))
         self.keep_model = bool(ds.get("keepModel")) and dtype != "model"
         if self.keep_model:   # grow from interfaces: the imported model is kept as it is
             if self.mesh is None:
@@ -276,7 +283,7 @@ class Problem:
         for a in self.anchors:
             fz = 2.0 * h if a.freeze_mm is None else a.freeze_mm   # default: keep 2 voxels of material
             if fz > 0:
-                frozen |= (a.region.sdf(centres) <= fz) & (fill > 0)
+                frozen |= (a.region.sdf(centres) <= fz) & (fill > 0) & (have > 0)
         self.frozen = frozen
         self.fill = fill
         self.active = self._connected(fill > 0)

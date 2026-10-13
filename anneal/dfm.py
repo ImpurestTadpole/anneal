@@ -106,6 +106,48 @@ def _frame(b):
     return x, np.cross(b, x), b
 
 
+def _machining(prob, proc, g, fill_b, checks, summary):
+    """3-axis / 5-axis machinability: tool access, tool reach and closed cavities."""
+    from .machining import assess as mach, directions
+    axes = int(proc.get("axes", 3))
+    D = float(proc.get("toolDiameterMM", 6.0))
+    dirs = directions(axes, proc.get("setups", ["+z"]), proc.get("fixture", "-z"))
+    solid = g.to3d(fill_b) > 0.5
+    r = mach(solid, g.h, D, dirs)
+    summary["machining"] = {k: v for k, v in r.items() if k != "mask"}
+    summary["machining"].update({"axes": axes, "toolDiameterMM": D,
+                                 "setups": proc.get("setups") if axes == 3 else None,
+                                 "fixture": proc.get("fixture", "-z") if axes == 5 else None})
+    share = r["unreachableShare"]
+    ok = share <= 0.01
+    how = (f"from {', '.join(proc.get('setups', ['+z']))}" if axes == 3 else f"5-axis, fixture on {proc.get('fixture', '-z')}")
+    checks.append({"name": f"Machinability: tool access ({axes}-axis, Ø{D:g} mm tool)", "group": "dfm", "ok": ok,
+                   "value": f"{r['unreachableAreaMM2']:.0f} mm² of surface the tool cannot reach ({100 * share:.1f} %), {how}",
+                   "limit": "≤ 1 % of the surface",
+                   "fix": "" if ok else ("Add a setup (for example -z) or use 5-axis, turn on the optimizer's machining "
+                                         "filter, or use a smaller tool." if axes == 3 else
+                                         "Use a smaller tool, or widen slots and inside corners (optimizer.minMemberMM).")})
+    reach = float(proc.get("maxDepthToDiameter", 4.0)) * D
+    okr = r["deepestCutMM"] <= reach
+    checks.append({"name": "Machinability: tool reach", "group": "dfm", "ok": True, "warn": not okr,
+                   "value": f"deepest cut {r['deepestCutMM']:.1f} mm below the stock face ({r['deepestCutMM'] / D:.1f} × tool Ø)",
+                   "limit": f"≤ {reach:g} mm ({proc.get('maxDepthToDiameter', 4.0):g} × Ø)",
+                   "fix": "" if okr else "Use a longer tool, cut from another side, or make the pocket shallower."})
+    summary["stockMM"] = r["stockMM"]
+    pv = float(fill_b.sum() * g.h ** 3)
+    checks.append({"name": "Machinability: stock and material removed", "group": "dfm", "ok": True,
+                   "value": f"stock {r['stockMM'][0]:.0f} × {r['stockMM'][1]:.0f} × {r['stockMM'][2]:.0f} mm, "
+                            f"{100 * (1 - pv / r['stockVolumeMM3']):.0f} % of it machined away",
+                   "limit": "–", "fix": ""})
+    n_cav, v_cav = enclosed_voids(g, fill_b)
+    summary["enclosedVoids"] = {"count": n_cav, "volumeCM3": v_cav / 1000}
+    checks.append({"name": "Machinability: closed cavities", "group": "dfm", "ok": n_cav == 0,
+                   "value": f"{n_cav} cavit{'y' if n_cav == 1 else 'ies'}" if n_cav else "none",
+                   "limit": "none (a cutter cannot reach them)",
+                   "fix": "" if not n_cav else "Open each cavity to the outside, or turn on the machining filter."})
+    return checks, summary
+
+
 def assess(prob, mesh, fill_b, built, thick):
     """Printability checks. Returns (checks, summary)."""
     proc = prob.process
@@ -117,6 +159,7 @@ def assess(prob, mesh, fill_b, built, thick):
     name = proc.get("name", "process")
     summary["process"] = name
     summary["buildDirection"] = axis_name(b)
+    pre = "Machinability" if proc.get("method") == "machining" else "Printability"
 
     # build volume
     bv = proc.get("buildVolumeMM")
@@ -126,7 +169,7 @@ def assess(prob, mesh, fill_b, built, thick):
     summary["extentMM"] = ext.round(2).tolist()
     if bv:
         ok = fits(ext, bv)
-        checks.append({"name": "Printability: fits the build volume", "ok": ok, "group": "dfm",
+        checks.append({"name": ("Machinability: fits the machine travel" if proc.get("method") == "machining" else "Printability: fits the build volume"), "ok": ok, "group": "dfm",
                        "value": f"{ext[0]:.0f} × {ext[1]:.0f} × {ext[2]:.0f} mm (height along {axis_name(b)})",
                        "limit": f"{bv[0]:g} × {bv[1]:g} × {bv[2]:g} mm",
                        "fix": "" if ok else "Turn the part (another build direction), split it, or use a larger machine."})
@@ -136,7 +179,7 @@ def assess(prob, mesh, fill_b, built, thick):
     if thick.size and wall:
         tmin = float(np.percentile(thick, 2)) * g.h
         ok = tmin >= wall
-        checks.append({"name": "Printability: thinnest member vs minimum wall", "ok": ok, "group": "dfm",
+        checks.append({"name": f"{pre}: thinnest member vs minimum wall", "ok": ok, "group": "dfm",
                        "value": f"{tmin:.2f} mm (2nd percentile)", "limit": f"≥ {wall:g} mm",
                        "fix": "" if ok else f"Set the smallest member (optimizer.minMemberMM) to at least {2 * wall:g} mm."})
         summary["thinnestMemberMM"] = tmin
@@ -154,10 +197,13 @@ def assess(prob, mesh, fill_b, built, thick):
                 holes.append((f"keep-out {i + 1}", 2 * r["r"]))
         small = [(n, d) for n, d in holes if d < hmin]
         if holes:
-            checks.append({"name": "Printability: holes at least the minimum hole size", "ok": True, "warn": bool(small),
+            checks.append({"name": f"{pre}: holes at least the minimum hole size", "ok": True, "warn": bool(small),
                            "group": "dfm", "value": ", ".join(f"{n} Ø{d:.1f}" for n, d in (small or holes)[:4]),
                            "limit": f"Ø ≥ {hmin:g} mm",
                            "fix": "" if not small else "Print these holes undersize and drill or ream them to size."})
+
+    if proc.get("method") == "machining":
+        return _machining(prob, proc, g, fill_b, checks, summary)
 
     # overhangs and support
     max_deg = float(proc.get("maxOverhangDeg", 90))

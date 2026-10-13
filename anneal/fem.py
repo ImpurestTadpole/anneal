@@ -244,6 +244,12 @@ class FEM:
         u[self.free] = u_red
         return u
 
+    def internal_forces(self, u_full, Ee):
+        """Global internal force vector K u (all DOFs, fixed ones included), N."""
+        ue = u_full[self.edof]
+        fe = (ue @ self.ke) * np.asarray(Ee)[:, None]
+        return np.bincount(self.edof.ravel(), weights=fe.ravel(), minlength=3 * self.grid.nnode)
+
     def element_energy(self, u_full):
         """u_e^T ke u_e per active element (for E = 1)."""
         ue = u_full[self.edof]

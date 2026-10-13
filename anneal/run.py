@@ -54,7 +54,9 @@ def evaluate(prob, fill, label, log):
     fem = FEM(g, active, fixed, prob.material["nu"], log=log, D=D)
     E0 = prob.material["E"]
     K = fem.assemble(E0 * fill[fem.act])
+    t_solve = time.time()
     Us = fem.solve(K, [fem.reduce_load(F[c]) for c in prob.cases], rtol=1e-9)
+    t_solve = time.time() - t_solve
     anchor_nodes = prob.load_nodes(active)
     near = np.zeros(fem.act.size, bool)
     all_anchor = np.concatenate(list(anchor_nodes.values()))
@@ -105,6 +107,13 @@ def evaluate(prob, fill, label, log):
         res["safetyFactorVonMises"] = res["safetyFactor"]
         res["safetyFactorHill"] = 1.0 / worst_hill if worst_hill > 0 else float("inf")
         res["safetyFactor"] = min(res["safetyFactor"], res["safetyFactorHill"])
+    try:
+        from .fea import study
+        keep = solid & ~near if (solid & ~near).any() else np.ones(fem.act.size, bool)
+        res["fea"] = study(prob, fem, K, E0 * fill[fem.act], prob.cases, F, Us, anchor_nodes, keep, label,
+                           t_solve, prob.material["yield"], E0)
+    except Exception as e:   # the report is extra information: never lose a run over it
+        res["fea"] = {"error": str(e)}
     res["_fields"] = {"active": active, "u": u_fields, "vm": vm_fields}
     return res
 
@@ -345,6 +354,13 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         prob.derived["printAware"] = info
         log(f"  print-aware material: E {info['E']:g} MPa in the layers, Ez {info['Ez']:g} MPa across "
             f"(nuZ {info['nuZ']:g}, Gz {info['Gz']:.4g} MPa" + (f"; assumed {', '.join(info['assumed'])}" if info["assumed"] else "") + ")")
+    mill = None
+    proc = prob.process or {}
+    if proc.get("method") == "machining" and int(proc.get("axes", 3)) == 3 and opt.get("machiningFilter", True):
+        from .machining import MillFilter
+        mill = lambda: MillFilter(g.shape, proc.get("setups", ["+z"]))
+        prob.derived["machiningFilter"] = {"setups": proc.get("setups", ["+z"])}
+        log(f"  machining filter on: every empty space stays open to the tool from {', '.join(proc.get('setups', ['+z']))}")
     if opt.get("overhangFilter"):
         raise RuntimeError("optimizer.overhangFilter is not part of Anneal 0.4 (it is still in testing). Remove it "
                            "from the spec; the printability report still shows overhangs and support volume.")
@@ -364,7 +380,7 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
                    r_mm=r_mm, x0=x0,
                    p_final=float(opt.get("penalty", 3.0)), move=float(opt.get("move", 0.2)),
                    combine=prob.combine, log=log, beta_max=float(opt.get("sharpness", 4.0)),
-                   D=prob.D)
+                   D=prob.D, mfilter=mill() if mill else None)
         x = res["x"]
         log("Generating the surface")
         f = output_field(prob, x)
@@ -423,6 +439,14 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
             + ("" if ok else " — no pass met the limit; this is the stiffest"))
     res, x, f, level, mesh, fill_b, built, thick = (best[k] for k in
                                                     ("res", "x", "f", "level", "mesh", "fill_b", "built", "thick"))
+    try:
+        from .fea import mass_properties, report_lines
+        built["massProperties"] = mass_properties(mesh, prob.material["density"])
+        if "error" not in built.get("fea", {"error": 1}):
+            for line in report_lines(built["fea"], built["massProperties"]):
+                log(line)
+    except Exception as e:
+        log(f"  (FEA study summary not available: {e})")
     if prob.spec.get("impact"):
         log("Impact check on the as-built part (equivalent static)")
         built["impact"] = impact_check(prob, fill_b, built["lockingFactor"], log)
@@ -443,8 +467,20 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         fmt = str(fmt).lower().lstrip(".")
         if fmt == "stl":
             continue
+        if fmt in ("step", "stp"):
+            try:
+                from .stepout import export_step
+                pth = os.path.join(out_dir, f"{prob.name}-optimized.step")
+                info = export_step(mesh, pth, int(prob.out_opts.get("stepFaces", 20000)))
+                prob.derived["step"] = info
+                files.append(pth)
+                log(f"  STEP written: faceted solid, {info['faces']:,} faces, volume {info['volumeMM3'] / 1000:.2f} cm3 "
+                    f"(mesh {info['meshVolumeMM3'] / 1000:.2f} cm3)")
+            except Exception as e:
+                log(f"  (STEP not written: {e})")
+            continue
         if fmt not in ("3mf", "obj", "ply", "glb", "off"):
-            log(f"  output format '{fmt}' is not supported; use stl, 3mf, obj, ply, glb or off")
+            log(f"  output format '{fmt}' is not supported; use stl, 3mf, step, obj, ply, glb or off")
             continue
         try:
             pth = os.path.join(out_dir, f"{prob.name}-optimized.{fmt}")

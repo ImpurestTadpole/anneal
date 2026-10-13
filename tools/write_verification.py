@@ -72,6 +72,24 @@ else:
           f"(ratio {f(v['ratio'], 4)}); Anneal voxel solve {f(an)} mm |")
     w(f"\nCalculiX mesh: {nl.get('meshElements', 0):,} tet10 elements, {f(nl.get('meshSizeMM'), 3)} mm.\n")
 
+ri = ev.get("interfacesRun")
+if ri:
+    w("## 3b. Growing a part from bolt-on points, with exact geometry\n")
+    w("`examples/interfaces.json`: the model holds only a mounting pad with four M6 holes and a pin lug "
+      "(`examples/make_interfaces.py`). Design space: its bounding box, model kept (`keepModel`), holes marked "
+      "`\"hole\": true` with 15 mm of bolt-head room, one keep-out box, exact geometry on.\n")
+    s = ri["summary"]
+    w("| Check | Result |\n|---|---|")
+    w(f"| Material added | model {f(ri['modelCM3'])} cm³ → part {f(ri['partCM3'])} cm³ |")
+    w(f"| Imported interfaces kept | {f(ri['modelKeptCM3'])} of {f(ri['modelCM3'])} cm³ "
+      f"({100 * ri['modelKeptCM3'] / ri['modelCM3']:.2f} %) |")
+    w(f"| One closed solid | pieces {ri['pieces']}, watertight {ri['watertight']} |")
+    for k, v in ri["holeRadiiMM"].items():
+        want = 4.0 if k == "pin" else 3.3
+        w(f"| Hole '{k}' radius (model {want} mm) | {f(v[0])} to {f(v[1])} mm |" if v else f"| Hole '{k}' | not found |")
+    w(f"| Part material inside the bolt-head room | {f(ri['boltAccessMaterialMM3'], 3)} mm³ |")
+    w(f"| Mass, displacement (limit 0.3 mm) | {f(s['massG'])} g, {f(s['maxDisplacementMM'])} mm |")
+    w("")
 c0 = ev.get("calculixR0")
 if c0:
     w("## 4. Independent solver on the default bracket\n")

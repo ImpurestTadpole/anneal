@@ -165,3 +165,22 @@ def test_taskbar_icon_hooks(monkeypatch):
     win = types.SimpleNamespace(native=Form())
     assert desktop.set_window_icon(win) is True
     assert calls == [desktop.ICON_ICO] and win.native.Icon == ("icon", desktop.ICON_ICO)
+
+
+def test_keep_regions_never_add_material(tmp_path):
+    """A keep sphere that sticks out of the part keeps only the part's own material (no bubble)."""
+    from anneal.problem import Problem
+    s = json.loads(open(_small_spec(tmp_path)).read())
+    s["keep"] = [{"type": "sphere", "center": [-20, 0, 10], "r": 6}]      # on the top edge: half outside
+    p = Problem(spec=s, log=lambda *a: None).build()
+    c = p.grid.elem_centers()
+    outside = (np.linalg.norm(c - [-20, 0, 10], axis=1) < 5) & ((c[:, 2] > 10.5) | (c[:, 0] < -20.5))
+    inside = (np.linalg.norm(c - [-20, 0, 10], axis=1) < 5) & (c[:, 2] < 9.5) & (c[:, 0] > -19.5)
+    assert p.fill[outside].max() == 0                       # nothing added outside the model
+    assert p.frozen[inside].all()                           # the model's own material there is kept
+    for kind in ("bounds", "hull"):                         # also when the design space may grow
+        s2 = dict(s, designSpace={"type": kind, "marginMM": 8})
+        p2 = Problem(spec=s2, log=lambda *a: None).build()
+        c2 = p2.grid.elem_centers()
+        out2 = (np.linalg.norm(c2 - [-20, 0, 10], axis=1) < 5) & ((c2[:, 2] > 10.5) | (c2[:, 0] < -20.5))
+        assert not p2.frozen[out2].any()

@@ -48,13 +48,25 @@ PROCESSES = {
              "enclosedVoids": "fail", "buildVolumeMM": [250.0, 250.0, 325.0], "buildDirection": [0.0, 0.0, 1.0],
              "zStrengthFactor": 0.9, "layerMM": 0.06,
              "note": "Laser powder bed fusion of metal. Build volume of an EOS M290."},
+    "CNC-3axis": {"method": "machining", "axes": 3, "setups": ["+z"], "toolDiameterMM": 6.0,
+                  "maxDepthToDiameter": 4.0, "minWallMM": 1.0, "minHoleMM": 2.0, "enclosedVoids": "fail",
+                  "buildVolumeMM": [500.0, 400.0, 300.0],
+                  "note": "3-axis milling. setups: the sides the tool comes from (add \"-z\" for a second setup, "
+                          "flipped). The optimizer keeps every empty space open to a setup."},
+    "CNC-5axis": {"method": "machining", "axes": 5, "fixture": "-z", "toolDiameterMM": 6.0,
+                  "maxDepthToDiameter": 6.0, "minWallMM": 1.0, "minHoleMM": 2.0, "enclosedVoids": "fail",
+                  "buildVolumeMM": [500.0, 400.0, 300.0],
+                  "note": "5-axis milling: the tool may come from any side except the fixture side."},
 }
+# Machining keys: method "machining"; axes 3 or 5; setups (3-axis) list of "+z", "-z", "+x" ...;
+# fixture (5-axis) the clamped side; toolDiameterMM the smallest cutter; maxDepthToDiameter tool reach.
 
 # Ez, nuZ, Gz (optional): stiffness across the layers for print-aware runs (spec physics.anisotropic).
 MAT_KEYS = ["E", "nu", "density", "yield", "minWallMM", "process", "zStrengthFactor", "Ez", "nuZ", "Gz",
             "note", "source"]
 PROC_KEYS = ["minWallMM", "minHoleMM", "maxOverhangDeg", "supportsAllowed", "enclosedVoids", "buildVolumeMM",
-             "buildDirection", "zStrengthFactor", "layerMM", "note"]
+             "buildDirection", "zStrengthFactor", "layerMM", "note", "method", "axes", "setups", "fixture",
+             "toolDiameterMM", "maxDepthToDiameter"]
 
 
 class LibraryError(ValueError):
@@ -148,7 +160,7 @@ def get_process(spec_process, material):
     if name and name not in procs:
         raise ValueError(f"Unknown process '{name}'. Use one of: {', '.join(procs)}, or add it to your library.")
     p = {k: v for k, v in procs.get(name, {}).items() if k != "builtIn"} if name else {}
-    if "zStrengthFactor" in material:
+    if "zStrengthFactor" in material and p.get("method") != "machining":   # layers exist only in printed parts
         p["zStrengthFactor"] = material["zStrengthFactor"]
     p.update(over)
     p["name"] = name or "none"
@@ -209,6 +221,27 @@ def validate_process(p, where="Process"):
             p[k] = [_num(x, k, where) for x in v]
     if "buildDirection" in p and sum(x * x for x in p["buildDirection"]) < 1e-12:
         raise LibraryError(f"{where}: buildDirection cannot be zero. Use for example [0, 0, 1] (build up along +Z).")
+    for k in ("toolDiameterMM", "maxDepthToDiameter"):
+        if p.get(k) not in (None, ""):
+            p[k] = _num(p[k], k, where)
+            if p[k] <= 0:
+                raise LibraryError(f"{where}: {k} must be more than 0.")
+    if p.get("method", "additive") not in ("additive", "machining"):
+        raise LibraryError(f"{where}: method must be additive or machining.")
+    if p.get("method") == "machining":
+        p["axes"] = int(p.get("axes", 3))
+        if p["axes"] not in (3, 5):
+            raise LibraryError(f"{where}: axes must be 3 or 5.")
+        ok = {"+x", "-x", "+y", "-y", "+z", "-z"}
+        if p["axes"] == 3:
+            st = p.get("setups") or ["+z"]
+            if isinstance(st, str):
+                st = [t.strip() for t in st.replace(",", " ").split()]
+            if not st or any(t.lower() not in ok for t in st):
+                raise LibraryError(f"{where}: setups must be a list of +x, -x, +y, -y, +z, -z (the sides the tool comes from).")
+            p["setups"] = [t.lower() for t in st]
+        if str(p.get("fixture", "-z")).lower() not in ok:
+            raise LibraryError(f"{where}: fixture must be one of +x, -x, +y, -y, +z, -z.")
     if "supportsAllowed" in p:
         p["supportsAllowed"] = str(p["supportsAllowed"]).lower() not in ("false", "0", "no")
     return p

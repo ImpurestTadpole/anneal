@@ -65,6 +65,35 @@ ev["physicsRun"] = {"spec": "examples/bracket-pla.json", "summary": summary(rp, 
                                                      "safetyFactorLayers")},
                     "buckling": o.get("buckling"), "impact": o.get("impact"), "nonlinear": o.get("nonlinear"),
                     "lockingFactor": o.get("lockingFactor"), "cases": o.get("cases")}
+ri_dir = os.path.join(P, "RI")
+if os.path.exists(os.path.join(ri_dir, "run.json")):
+    import trimesh
+    ri = J(ri_dir, "run.json")
+    part = trimesh.load(os.path.join(ri_dir, "interfaces-optimized.stl"))
+    model = trimesh.load(os.path.join(root, "examples", "interfaces.stl"))
+    kept = trimesh.boolean.intersection([part, model], engine="manifold").volume
+    v = part.vertices
+    holes = {}
+    for name, (y, z) in {"bolt-1": (10, 8), "bolt-2": (50, 8), "bolt-3": (10, 32), "bolt-4": (50, 32)}.items():
+        sel = (v[:, 0] > -0.01) & (v[:, 0] < 6.01)
+        d = np.hypot(v[sel, 1] - y, v[sel, 2] - z)
+        d = d[d < 4.5]
+        holes[name] = [float(d.min()), float(d.max())] if d.size else None
+    sel = (v[:, 1] > 19.99) & (v[:, 1] < 40.01)
+    d = np.hypot(v[sel, 0] - 90, v[sel, 2] - 60)
+    d = d[d < 5.5]
+    holes["pin"] = [float(d.min()), float(d.max())] if d.size else None
+    # bolt-head room: nothing of the part within the access cylinders in front of the pad
+    acc = 0
+    for (y, z) in ((10, 8), (50, 8), (10, 32), (50, 32)):
+        cyl = trimesh.creation.cylinder(radius=3.6 * 3.3 / 2, height=15,
+                                        transform=trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
+        cyl.apply_translation([6 + 7.5, y, z])
+        acc += trimesh.boolean.intersection([part, cyl], engine="manifold").volume
+    ev["interfacesRun"] = {"summary": summary(ri, ri_dir), "modelCM3": model.volume / 1000, "partCM3": part.volume / 1000,
+                           "modelKeptCM3": kept / 1000, "pieces": len(part.split(only_watertight=False)),
+                           "watertight": bool(part.is_watertight), "holeRadiiMM": holes,
+                           "boltAccessMaterialMM3": float(acc), "exactFeatures": ri["derived"].get("exactFeatures")}
 p = os.path.join(P, "ccx_R0", "ccx_bracket.json")
 ev["calculixR0"] = J(p) if os.path.exists(p) else None
 g = os.path.join(GUI, "gui_smoke.json")

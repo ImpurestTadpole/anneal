@@ -49,7 +49,7 @@ class Filter:
 
 def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
          iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX,
-         probe=None, D=None):
+         probe=None, D=None, mfilter=None):
     t_start = time.time()
     fem = FEM(grid, active, fixed, nu, log=log, D=D)
     act = fem.act
@@ -92,7 +92,21 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         xt = filt.forward(xd)
         xp, dxp = project(xt)
         xp[frz] = 1.0
-        back = lambda d: filt.backward(d * dxp)
+        if mfilter is None:
+            back = lambda d: filt.backward(d * dxp)
+        else:   # manufacturing filter (machining access) after the projection; it only adds material
+            full = np.zeros(grid.nelem)
+            full[act] = xp
+            xp = grid.to1d(mfilter.forward(grid.to3d(full)))[act]
+            xp[frz] = 1.0
+            st = mfilter.state()
+
+            def back(d):
+                mfilter.restore(st)
+                full = np.zeros(grid.nelem)
+                full[act] = np.where(frz, 0.0, d)
+                g = grid.to1d(mfilter.backward(grid.to3d(full)))[act]
+                return filt.backward(np.where(frz, 0.0, g) * dxp)
         return (xp, back) if with_grad else xp
 
     hist = []
