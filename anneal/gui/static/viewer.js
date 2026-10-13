@@ -18,8 +18,8 @@ export function viridis(t) {
   return [253 / 255, 231 / 255, 37 / 255];
 }
 
-function cssColor(name) {
-  return new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#888");
+function cssColor(name, fallback = "#888") {
+  return new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback);
 }
 
 function smoothNormals(geom) {
@@ -42,17 +42,21 @@ function smoothNormals(geom) {
   geom.setAttribute("normal", new THREE.BufferAttribute(out, 3));
 }
 
-function labelSprite(text, color) {
-  const c = document.createElement("canvas"), dpr = 2, fs = 26;
+const LABEL_FONT = (fs) => `600 ${fs}px "IBM Plex Mono", Consolas, ui-monospace, monospace`;
+function labelSprite(text, color, chip = true) {
+  // a square readout chip: dark plate, coloured bar and text (the same in both themes)
+  const c = document.createElement("canvas"), dpr = 2, fs = 24;
   const ctx = c.getContext("2d");
-  ctx.font = `600 ${fs}px Segoe UI, system-ui, sans-serif`;
-  const w = Math.ceil(ctx.measureText(text).width) + 24;
+  ctx.font = LABEL_FONT(fs);
+  const w = Math.ceil(ctx.measureText(text).width) + (chip ? 30 : 8);
   c.width = w * dpr; c.height = (fs + 16) * dpr;
   ctx.scale(dpr, dpr);
-  ctx.fillStyle = "rgba(255,255,255,0.92)";
-  ctx.beginPath(); ctx.roundRect(0, 0, w, fs + 16, 8); ctx.fill();
-  ctx.font = `600 ${fs}px Segoe UI, system-ui, sans-serif`;
-  ctx.fillStyle = color; ctx.textBaseline = "middle"; ctx.fillText(text, 12, (fs + 16) / 2 + 1);
+  if (chip) {
+    ctx.fillStyle = "rgba(20,22,24,0.88)"; ctx.fillRect(0, 0, w, fs + 16);
+    ctx.fillStyle = color; ctx.fillRect(0, 0, 5, fs + 16);
+  }
+  ctx.font = LABEL_FONT(fs);
+  ctx.fillStyle = color; ctx.textBaseline = "middle"; ctx.fillText(text, chip ? 16 : 4, (fs + 16) / 2 + 1);
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
   s.userData.aspect = w / (fs + 16);
@@ -68,13 +72,17 @@ export class Viewer {
     this.renderer.autoClear = false;
     host.appendChild(this.renderer.domElement);
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(32, 1, 0.1, 1e6);
-    this.camera.up.set(0, 0, 1);
-    this.scene.add(this.camera);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8a949c, 1.4));
-    const head = new THREE.DirectionalLight(0xffffff, 1.6);
-    head.position.set(0.4, 0.8, 1);
-    this.camera.add(head);
+    this.persp = new THREE.PerspectiveCamera(32, 1, 0.1, 1e6);
+    this.persp.up.set(0, 0, 1);
+    this.orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, -1e5, 1e6);   // the same view without perspective
+    this.orthoCam.up.set(0, 0, 1);
+    this.orthoH = 100;                                                       // ortho frustum height at zoom 1, mm
+    this.camera = this.persp;
+    this.scene.add(this.persp, this.orthoCam);
+    this.scene.add(new THREE.HemisphereLight(0xfbf8f0, 0x7d858c, 1.35));   // warm sky, cool ground
+    this.head = new THREE.DirectionalLight(0xffffff, 1.65);                  // key light rides with the camera
+    this.head.position.set(0.4, 0.8, 1);
+    this.camera.add(this.head);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
@@ -90,10 +98,10 @@ export class Viewer {
     this.axScene = new THREE.Scene();
     this.axCam = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
     this.axCam.up.set(0, 0, 1);
-    for (const [d, c, t] of [[[1, 0, 0], 0xc8433a, "x"], [[0, 1, 0], 0x3f9b4a, "y"], [[0, 0, 1], 0x2a69ad, "z"]]) {
+    for (const [d, c, t] of [[[1, 0, 0], 0xe0533f, "X"], [[0, 1, 0], 0x4fb35c, "Y"], [[0, 0, 1], 0x4a8fe0, "Z"]]) {
       const v = new THREE.Vector3(...d);
-      this.axScene.add(new THREE.ArrowHelper(v, new THREE.Vector3(), 1, c, 0.3, 0.18));
-      const s = labelSprite(t, "#" + c.toString(16).padStart(6, "0"));
+      this.axScene.add(new THREE.ArrowHelper(v, new THREE.Vector3(), 1, c, 0.3, 0.14));
+      const s = labelSprite(t, "#" + c.toString(16).padStart(6, "0"), false);
       s.position.copy(v.clone().multiplyScalar(1.35)); s.scale.set(0.5 * s.userData.aspect, 0.5, 1);
       this.axScene.add(s);
     }
@@ -106,20 +114,69 @@ export class Viewer {
   resize() {
     const w = this.host.clientWidth || 1, h = this.host.clientHeight || 1;
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
+    this.persp.aspect = w / h;
+    this.persp.updateProjectionMatrix();
+    this._orthoFrustum();
+  }
+
+  _orthoFrustum() {
+    const a = (this.host.clientWidth || 1) / (this.host.clientHeight || 1), h = this.orthoH / 2;
+    Object.assign(this.orthoCam, { left: -h * a, right: h * a, top: h, bottom: -h, near: this.size / 100, far: this.size * 60 });
+    this.orthoCam.updateProjectionMatrix();
+  }
+
+  get isOrtho() { return this.camera === this.orthoCam; }
+
+  setOrtho(on) {
+    // switch between perspective and orthographic; the part keeps its size on the screen
+    if (!!on === this.isOrtho) return;
+    const t = this.controls.target, tan = Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2));
+    const from = this.camera, to = on ? this.orthoCam : this.persp;
+    const dir = new THREE.Vector3().subVectors(from.position, t).normalize();
+    if (on) {
+      const dist = from.position.distanceTo(t);
+      this.orthoH = 2 * dist * tan;
+      this.orthoCam.zoom = 1;
+      this.orthoCam.position.copy(t).add(dir.multiplyScalar(Math.max(dist, this.size * 2)));
+      this._orthoFrustum();
+    } else {
+      const dist = this.orthoH / this.orthoCam.zoom / (2 * tan);
+      this.persp.position.copy(t).add(dir.multiplyScalar(dist));
+      this.persp.near = this.size / 500; this.persp.far = this.size * 50;
+      this.persp.updateProjectionMatrix();
+    }
+    to.up.copy(from.up);
+    to.add(this.head);
+    this.camera = to;
+    this.controls.object = to;
+    this.controls.update();
+  }
+
+  applyTheme() {
+    // colours that come from the CSS theme: floor grid (the part colours are read when it is painted)
+    if (this.box) { this._grid(); if (this.plateDir) this.setPlate(this.plateDir); }
   }
 
   render() {
     const r = this.renderer, w = this.host.clientWidth, h = this.host.clientHeight;
     r.setViewport(0, 0, w, h); r.setScissorTest(false); r.clear();
     r.render(this.scene, this.camera);
-    const s = 86;
+    const s = 84, o = 34;   // axis triad, bottom left, above the navigation help line
     const dir = new THREE.Vector3().subVectors(this.camera.position, this.controls.target).normalize();
     this.axCam.position.copy(dir.multiplyScalar(4)); this.axCam.up.copy(this.camera.up); this.axCam.lookAt(0, 0, 0);
-    r.setViewport(8, 8, s, s); r.setScissor(8, 8, s, s); r.setScissorTest(true); r.clearDepth();
+    r.setViewport(10, o, s, s); r.setScissor(10, o, s, s); r.setScissorTest(true); r.clearDepth();
     r.render(this.axScene, this.axCam);
     r.setScissorTest(false);
+    this._cube();
+  }
+
+  _cube() {
+    // turn the HTML view cube (#vcBox) with the camera: world axes to CSS axes (y down)
+    const box = this._vc || (this._vc = document.getElementById("vcBox"));
+    if (!box) return;
+    const e = this.camera.matrixWorldInverse.elements, f = v => (+v).toFixed(4);
+    const m = `matrix3d(${f(e[0])},${f(-e[1])},${f(e[2])},0,${f(e[4])},${f(-e[5])},${f(e[6])},0,${f(e[8])},${f(-e[9])},${f(e[10])},0,0,0,0,1)`;
+    if (m !== this._vcm) { box.style.transform = m; this._vcm = m; }
   }
 
   async loadSTL(url) {
@@ -175,8 +232,8 @@ export class Viewer {
     if (this.grid) this.scene.remove(this.grid);
     const step = Math.pow(10, Math.floor(Math.log10(this.size / 4)));
     const n = Math.ceil(this.size * 1.6 / step);
-    this.grid = new THREE.GridHelper(n * step, n, 0x8e98a0, 0xb4bcc2);
-    this.grid.material.transparent = true; this.grid.material.opacity = 0.35;
+    this.grid = new THREE.GridHelper(n * step, n, cssColor("--grid-major", "#8e98a0"), cssColor("--grid-minor", "#b4bcc2"));
+    this.grid.material.transparent = true; this.grid.material.opacity = 0.55;
     this.grid.rotation.x = Math.PI / 2;
     const c = this.box.getCenter(new THREE.Vector3());
     this.grid.position.set(c.x, c.y, this.box.min.z - 0.002 * this.size);
@@ -188,7 +245,8 @@ export class Viewer {
     if (!this.box) return;
     const c = this.box.getCenter(new THREE.Vector3());
     const d = this.size * 1.9;
-    const dirs = { iso: [1, -1.25, 0.85], front: [0, -1, 0.0001], top: [0.0001, -0.0001, 1], right: [1, 0, 0.0001], fit: null };
+    const dirs = { iso: [1, -1.25, 0.85], front: [0, -1, 0.0001], top: [0, -0.001, 1], right: [1, 0, 0.0001],
+      back: [0, 1, 0.0001], left: [-1, 0, 0.0001], bottom: [0, -0.001, -1], fit: null };
     let v = dirs[kind];
     if (kind === "under") {   // look up at the part from below its build plate
       const B = new THREE.Vector3(...(this.plateDir || [0, 0, 1])).normalize();
@@ -201,8 +259,13 @@ export class Viewer {
     const dir = new THREE.Vector3(...v).normalize();
     this.controls.target.copy(c);
     this.camera.position.copy(c).add(dir.multiplyScalar(d));
-    this.camera.near = this.size / 500; this.camera.far = this.size * 50;
-    this.camera.updateProjectionMatrix();
+    if (this.isOrtho) {   // the same framing as the perspective camera at this distance
+      this.orthoH = 2 * d * Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2));
+      this.orthoCam.zoom = 1; this._orthoFrustum();
+    } else {
+      this.camera.near = this.size / 500; this.camera.far = this.size * 50;
+      this.camera.updateProjectionMatrix();
+    }
     this.controls.update();
   }
 
@@ -222,7 +285,7 @@ export class Viewer {
     // faceColors: array of [faceIndexArray, THREE.Color]; everything else steel
     const m = this.meshes[which]; if (!m) return;
     const col = m.geometry.attributes.color.array;
-    const base = which === "result" ? new THREE.Color(0x9fb0bd) : new THREE.Color(0xb9c1c7);
+    const base = which === "result" ? cssColor("--part-result", "#9fb0bd") : cssColor("--part-model", "#b9c1c7");
     for (let i = 0; i < col.length; i += 3) { col[i] = base.r; col[i + 1] = base.g; col[i + 2] = base.b; }
     for (const [faces, c] of faceColors || []) {
       for (const f of faces) {
@@ -272,7 +335,7 @@ export class Viewer {
     let hmin = Infinity;
     for (let i = 0; i < p.length; i += 3) hmin = Math.min(hmin, p[i] * B.x + p[i + 1] * B.y + p[i + 2] * B.z);
     const tol = this.size * 0.004;
-    const need = new THREE.Color(cssColor("--warn")), plate = new THREE.Color(0x3b4b57), ok = new THREE.Color(0xb9c1c7);
+    const need = cssColor("--warn"), plate = new THREE.Color(0x3b4b57), ok = cssColor("--part-model", "#b9c1c7");
     const a = new THREE.Vector3(), c = new THREE.Vector3(), d = new THREE.Vector3(), n = new THREE.Vector3();
     let needArea = 0, total = 0, plateArea = 0;
     const lim = Math.sin(THREE.MathUtils.degToRad(Math.min(90, maxDeg)));
