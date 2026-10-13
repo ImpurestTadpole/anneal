@@ -48,7 +48,7 @@ class Filter:
 
 
 def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
-         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX, am=None, am_order="after", am_continuation=False,
+         iters=80, r_mm=None, p_final=3.0, move=0.2, combine="sum", log=print, tol=0.01, x0=None, beta_max=BETA_MAX,
          probe=None, D=None):
     t_start = time.time()
     fem = FEM(grid, active, fixed, nu, log=log, D=D)
@@ -87,38 +87,12 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
         th = np.tanh(b * (xt - ETA))
         return (t0 + th) / (t0 + t1), b * (1 - th ** 2) / (t0 + t1)
 
-    def _am(v):                      # optional overhang (AM) filter, see amfilter.py
-        full = np.zeros(grid.nelem)
-        full[act] = v
-        return grid.to1d(am.forward(grid.to3d(full)))[act]
-
-    def _am_T(d, state):
-        am.restore(state)
-        full = np.zeros(grid.nelem)
-        full[act] = d
-        return grid.to1d(am.backward(grid.to3d(full)))[act]
-
     def physical(xd, with_grad=False):
         """Physical densities, and with_grad a function mapping dF/dxPhys to dF/dx."""
         xt = filt.forward(xd)
-        if am is None:
-            xp, dxp = project(xt)
-            xp[frz] = 1.0
-            back = lambda d: filt.backward(d * dxp)
-        elif am_order == "before":   # density filter -> AM filter -> projection
-            xt = xt.copy()
-            xt[frz] = 1.0
-            xa = _am(xt)
-            st = am.state()
-            xp, dxp = project(xa)
-            xp[frz] = 1.0
-            back = lambda d: filt.backward(np.where(frz, 0.0, _am_T(np.where(frz, 0.0, d * dxp), st)))
-        else:                        # density filter -> projection -> AM filter (Langelaar: AM last)
-            xp, dxp = project(xt)
-            xp[frz] = 1.0
-            xp = _am(xp)
-            st = am.state()
-            back = lambda d: filt.backward(np.where(frz, 0.0, _am_T(d, st)) * dxp)
+        xp, dxp = project(xt)
+        xp[frz] = 1.0
+        back = lambda d: filt.backward(d * dxp)
         return (xp, back) if with_grad else xp
 
     hist = []
@@ -143,8 +117,6 @@ def simp(grid, fill, active, frozen, fixed, loads, weights, E0, nu, vf,
             elif beta_since >= beta_step and beta[0] < beta_max:
                 beta[0], beta_since = min(beta_max, 2 * beta[0]), 0
             beta_since += 1
-        if am is not None and am_continuation:   # xi0 0.5 -> 0.9 over the first 60 % of the budget
-            am.set_xi0(0.5 + 0.4 * min(1.0, it / max(1.0, 0.6 * iters)))
         xPhys, back = physical(x, with_grad=True)
         Ee = E0 * phi * (EMIN + xPhys ** p * (1 - EMIN))
         K = fem.assemble(Ee)

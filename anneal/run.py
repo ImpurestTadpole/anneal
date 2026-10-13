@@ -18,10 +18,6 @@ from . import report
 
 
 # Measured in validation check V3: hex8 stiffness ratio (exact / voxel model) vs voxels through depth.
-# Overhang filter position and continuation, chosen in the roadmap verification (research/am_tune.py).
-AM_ORDER = "after"
-AM_CONTINUATION = False
-
 LOCKING = [(1.0, 0.70), (2.0, 0.869), (4.0, 0.957), (8.0, 0.983), (16.0, 0.995)]
 
 
@@ -113,6 +109,74 @@ def evaluate(prob, fill, label, log):
     return res
 
 
+def impact_check(prob, fill, lf, log):
+    """Equivalent-static impact: a rigid mass at speed v hits an anchor region along a direction.
+    The part's stiffness there, k, comes from a unit-load solve; the peak force is sqrt(2 E k).
+    Force and stress use the uncorrected (stiffer) k, which gives the larger force; the deflection
+    uses the locking-corrected k, which gives the larger deflection. Both are conservative."""
+    from .physics import impact_energy, impact_peak_force, hill_index, PhysicsError
+    g = prob.grid
+    active = prob._connected(fill >= 0.05)
+    fill = np.where(active, fill, 0.0)
+    fixed, _, _ = prob.boundary(active)
+    D = getattr(prob, "D", None)
+    fem = FEM(g, active, fixed, prob.material["nu"], log=lambda *a: None, D=D)
+    E0 = prob.material["E"]
+    K = fem.assemble(E0 * fill[fem.act])
+    anchor_nodes = prob.load_nodes(active)
+    en = g.element_nodes(fem.act)
+    near = np.isin(en, np.concatenate(list(anchor_nodes.values()))).any(axis=1)
+    solid = fill[fem.act] >= 0.5
+    keep = solid & ~near if (solid & ~near).any() else np.ones(fem.act.size, bool)
+    proc = getattr(prob, "process", None)
+    bdir = (proc or {}).get("buildDirection")
+    Y = prob.material["yield"]
+    by_name = {a.name: a for a in prob.anchors}
+    out = {}
+    for name, case in prob.spec.get("impact", {}).items():
+        where = f"impact '{name}'"
+        an = case.get("anchor")
+        if an not in by_name:
+            raise PhysicsError(f"{where}: anchor '{an}' is not in the spec. Use one of: {', '.join(by_name)}.")
+        if by_name[an].role == "fixed":
+            raise PhysicsError(f"{where}: anchor '{an}' is a fixed support. Name the region that is hit.")
+        d = np.asarray(case.get("direction", []), float)
+        if d.shape != (3,) or np.linalg.norm(d) < 1e-12:
+            raise PhysicsError(f"{where}: give direction, the way the mass moves, as three numbers (for example [0, 0, -1]).")
+        d = d / np.linalg.norm(d)
+        E_imp, v = impact_energy(case, where)
+        nodes = anchor_nodes[an]
+        Fu = np.zeros(3 * g.nnode)
+        for c in range(3):
+            Fu[3 * nodes + c] = d[c] / nodes.size          # 1 N in total, spread over the region
+        u = fem.expand(fem.solve(K, [fem.reduce_load(Fu)], rtol=1e-10)[0])
+        delta = float((u.reshape(-1, 3)[nodes] @ d).mean())  # mm per N at the hit region
+        if delta <= 0:
+            raise PhysicsError(f"{where}: the part does not resist a push along {d.round(3).tolist()} at '{an}'.")
+        k = 1.0 / delta
+        F = impact_peak_force(E_imp, k)
+        sig = fem.stress(u, E0) * F
+        vm = np.sqrt(0.5 * ((sig[:, 0] - sig[:, 1]) ** 2 + (sig[:, 1] - sig[:, 2]) ** 2 + (sig[:, 2] - sig[:, 0]) ** 2)
+                     + 3 * (sig[:, 3] ** 2 + sig[:, 4] ** 2 + sig[:, 5] ** 2))
+        peak = float(np.percentile(vm[keep], 99.5))
+        r = {"anchor": an, "speedMS": v, "energyJ": E_imp / 1000.0, "stiffnessNperMM": k,
+             "peakForceN": F, "deflectionMM": float(np.sqrt(2 * E_imp / (k * lf))),
+             "peakStressMPa": peak, "safetyFactor": Y / peak if peak > 0 else float("inf")}
+        if D is not None:
+            zf = float(proc.get("zStrengthFactor", 1.0))
+            hi = float(np.percentile(hill_index(sig, Y, Y * zf, bdir)[keep], 99.5))
+            r["safetyFactorHill"] = 1.0 / hi if hi > 0 else float("inf")
+            r["safetyFactor"] = min(r["safetyFactor"], r["safetyFactorHill"])
+        if bdir is not None:
+            sz = np.maximum(FEM.normal_stress(sig, bdir), 0.0)
+            pz = float(np.percentile(sz[keep], 99.5))
+            r["safetyFactorLayers"] = Y * float(proc.get("zStrengthFactor", 1.0)) / pz if pz > 0 else float("inf")
+        out[name] = r
+        log(f"  impact '{name}': {r['energyJ']:.3g} J at {v:.3g} m/s on '{an}', stiffness {k:.4g} N/mm -> "
+            f"peak force {F:.4g} N, deflection {r['deflectionMM']:.3g} mm, safety factor {r['safetyFactor']:.3g}")
+    return out
+
+
 def buckling_check(prob, fill, lf, log):
     """Linear buckling factor of the as-built part per load case, times the locking factor lf."""
     from .physics import buckling
@@ -173,6 +237,34 @@ def checks(prob, built, thick):
                     "value": f"{100 * (1 - frac):.0f} % of skeleton", "limit": "≥ 75 % (else warning)",
                     "fix": "" if good else f"Displacement was scaled by {1 / built.get('lockingFactor', 1):.3f} to stay "
                                            f"conservative. For a sharper answer, rerun with resolution 'fine'."})
+    if "impact" in built:
+        imin = float(lim.get("minImpactSafetyFactor", 1.0))
+        for name, r in built["impact"].items():
+            ok = r["safetyFactor"] >= imin
+            lay = r.get("safetyFactorLayers")
+            ok_l = lay is None or lay >= imin
+            out.append({"name": f"Impact '{name}' (equivalent static, {r['energyJ']:.3g} J)", "ok": ok and ok_l,
+                        "value": f"safety factor {r['safetyFactor']:.3g}" + (f", across layers {lay:.3g}" if lay is not None else "")
+                                 + f"; peak force {r['peakForceN']:.4g} N, deflection {r['deflectionMM']:.3g} mm",
+                        "limit": f"≥ {imin:g}",
+                        "fix": "" if ok and ok_l else "Raise volumeFraction, add a load case with the peak force so the "
+                                                      "optimizer builds for it, or choose a tougher material."})
+    if "nonlinear" in built:
+        nl = built["nonlinear"]
+        if "skipped" in nl:
+            out.append({"name": "Large deformation (CalculiX)", "ok": True, "warn": True, "value": "not run",
+                        "limit": "–", "fix": nl["skipped"]})
+        else:
+            for c, r in nl["cases"].items():
+                big = abs(r["ratio"] - 1) > 0.10 if np.isfinite(r["ratio"]) else True
+                lim_d = lim.get("maxDisplacementMM")
+                ok = np.isfinite(r["nonlinear"]) and (lim_d is None or r["nonlinear"] <= lim_d)
+                out.append({"name": f"Large deformation, load case {c} (CalculiX NLGEOM)", "ok": bool(ok), "warn": bool(big),
+                            "value": f"{r['nonlinear']:.4g} mm nonlinear vs {r['linear']:.4g} mm linear (ratio {r['ratio']:.3f})",
+                            "limit": f"≤ {lim_d} mm" if lim_d is not None else "–",
+                            "fix": ("" if ok else "Raise volumeFraction or reduce the load. ")
+                                   + ("Large-deformation effects are above 10 %: the linear results are not reliable "
+                                      "for this load." if big else "")})
     if "buckling" in built:
         bmin = float(lim.get("minBucklingFactor", 2.0))
         worst = min(v["corrected"] for v in built["buckling"].values())
@@ -247,32 +339,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         prob.derived["printAware"] = info
         log(f"  print-aware material: E {info['E']:g} MPa in the layers, Ez {info['Ez']:g} MPa across "
             f"(nuZ {info['nuZ']:g}, Gz {info['Gz']:.4g} MPa" + (f"; assumed {', '.join(info['assumed'])}" if info["assumed"] else "") + ")")
-    am_make = None
     if opt.get("overhangFilter"):
-        from .amfilter import AMFilter, axis_of
-        if not prob.process or not prob.process.get("buildDirection"):
-            raise RuntimeError("optimizer.overhangFilter needs a process with a build direction. Set \"process\": "
-                               "\"FDM\" (or another process) in the spec.")
-        ax, sg = axis_of(prob.process["buildDirection"])
-        from .amfilter import design_space_check, AXES
-        lost = design_space_check(g.to3d(prob.active.astype(float)), g.to3d(prob.frozen.astype(float)))
-        here = next(k for k, v in AXES.items() if v == (ax, sg))
-        prob.derived["overhangDesignSpaceLost"] = lost
-        if lost[here] > 0.01:
-            good = sorted((v, k) for k, v in lost.items())
-            raise RuntimeError(
-                f"With the overhang filter, {100 * lost[here]:.0f} % of the design space cannot be printed along "
-                f"{here} without support, so the optimizer cannot keep the load paths. Choose another build "
-                f"direction in the process (best: {good[0][1]} {100 * good[0][0]:.1f} % lost, {good[1][1]} "
-                f"{100 * good[1][0]:.1f} %), or turn optimizer.overhangFilter off. All directions: "
-                + ", ".join(f"{k} {100 * v:.1f} %" for k, v in lost.items()))
-        am_make = lambda: AMFilter(g.shape, ax, sg, active=g.to3d(prob.active.astype(float)),
-                                   keep=g.to3d(prob.frozen.astype(float)))
-        prob.derived["overhangFilter"] = {"buildDirection": prob.process["buildDirection"], "angleDeg": 45}
-        log(f"  overhang filter on: build direction {prob.process['buildDirection']}, 45 degree limit")
-        if int(opt.get("iterations", 80)) < 100:
-            log("  NOTE: with the overhang filter, 100 to 120 iterations give a cleaner design (fewer grey voxels). "
-                "Tested: 60 iterations left 20 % grey voxels, 120 left 15 %.")
+        raise RuntimeError("optimizer.overhangFilter is not part of Anneal 0.4 (it is still in testing). Remove it "
+                           "from the spec; the printability report still shows overhangs and support volume.")
     if int(opt.get("iterations", 80)) < 25:
         log("  WARNING: fewer than 25 iterations leaves the design grey; the exported part will be heavier "
             "than the target. Use 60 or more for a part you will make.")
@@ -289,8 +358,7 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
                    r_mm=r_mm, x0=x0,
                    p_final=float(opt.get("penalty", 3.0)), move=float(opt.get("move", 0.2)),
                    combine=prob.combine, log=log, beta_max=float(opt.get("sharpness", 4.0)),
-                   D=prob.D, am=am_make() if am_make else None,
-                   am_order=AM_ORDER, am_continuation=AM_CONTINUATION)
+                   D=prob.D)
         x = res["x"]
         log("Generating the surface")
         f = output_field(prob, x)
@@ -345,6 +413,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
             + ("" if ok else " — no pass met the limit; this is the stiffest"))
     res, x, f, level, mesh, fill_b, built, thick = (best[k] for k in
                                                     ("res", "x", "f", "level", "mesh", "fill_b", "built", "thick"))
+    if prob.spec.get("impact"):
+        log("Impact check on the as-built part (equivalent static)")
+        built["impact"] = impact_check(prob, fill_b, built["lockingFactor"], log)
     if phys.get("buckling") or "minBucklingFactor" in prob.limits:
         log("Buckling check on the as-built part")
         built["buckling"] = buckling_check(prob, fill_b, built["lockingFactor"], log)
@@ -372,6 +443,16 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         except Exception as e:  # some formats need optional packages; STL is always written
             log(f"  ({fmt.upper()} not written: {e.__class__.__name__}; STL is complete)")
     prob.derived["isoLevel"] = level
+    if phys.get("nonlinear"):
+        log("Large-deformation check with CalculiX (as-built STL)")
+        from .sidecar import nonlinear_check
+        try:
+            built["nonlinear"] = nonlinear_check(prob, stl, os.path.join(out_dir, "calculix"), log,
+                                                 phys.get("nonlinearMeshMM"))
+        except Exception as e:   # the sidecar is optional: report, do not lose the run
+            built["nonlinear"] = {"skipped": f"CalculiX check failed: {e}"}
+        if "skipped" in built["nonlinear"]:
+            log(f"  large-deformation check skipped: {built['nonlinear']['skipped']}")
     original = None
     if prob.mesh is not None:
         try:

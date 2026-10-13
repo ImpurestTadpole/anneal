@@ -231,24 +231,31 @@ geometry.
 | `output.report` | true | Write the HTML report. |
 | `output.copyTo` | – | Also copy the part files to this folder. |
 
-### 0.4 options: print-aware material, overhang filter, buckling (all off by default)
+### 0.4 options: print-aware material, buckling, impact, large deformation (all off by default)
 
 Runs without these keys give the same result as 0.3.0 (checked bit for bit, see `VERIFICATION.md`).
 
 ```json
 "process": "FDM",
 "material": { "E": 3500, "nu": 0.36, "density": 1.24, "yield": 50, "Ez": 2400, "zStrengthFactor": 0.5 },
-"physics":  { "anisotropic": true, "buckling": true },
-"optimizer": { "iterations": 120, "overhangFilter": true },
-"limits":   { "minBucklingFactor": 2.0 }
+"physics":  { "anisotropic": true, "buckling": true, "nonlinear": true },
+"impact":   { "drop": { "anchor": "load-bore", "massKg": 0.5, "dropHeightMM": 1000, "direction": [0, 0, -1] } },
+"limits":   { "minBucklingFactor": 2.0, "minImpactSafetyFactor": 1.0 }
 ```
 
 | Key | What it does |
 |---|---|
 | `physics.anisotropic` | Print-aware material. Stiffness E in the layers, `Ez` across them (`nuZ` and `Gz` optional; if left out, nuZ = nu and Gz = Ez / (2(1 + nuZ)), and the run says so). Strength is checked with the Hill criterion: in-plane strength = yield, across layers = yield × zStrengthFactor, shear strengths assumed X/√3 and Z/√3. The safety factor is the lower of von Mises and Hill. Needs a process with a build direction. |
-| `optimizer.overhangFilter` | Langelaar's layer-by-layer filter inside the optimizer: no voxel can be denser than its support in the layer below (45° on cubic voxels). The plate is the lowest layer of the design space. Bosses and bores you freeze are kept as asked and may still need support. Needs a build direction along X, Y or Z. Use 100–120 iterations. |
 | `physics.buckling` or `limits.minBucklingFactor` | Linear buckling of the as-built part for each load case. The factor is multiplied by the shear-locking factor so it stays conservative (check V7). Default limit 2.0. Takes from about a minute to several minutes per load case. |
+| `impact` | Equivalent-static impact. A mass (`massKg`) moving at `speedMS`, or falling from `dropHeightMM`, hits a load region (`anchor`) along `direction`. Anneal finds the part's stiffness k at that region, the peak force F = √(2·E·k), and checks stress (and layers, with a process) at that force against `minImpactSafetyFactor` (default 1.0). It ignores the part's own mass, stress waves, rate effects and yielding, so use it for a stiff part hit by a heavier, slower object. |
+| `physics.nonlinear` | Large-deformation check with CalculiX: the exported part is meshed into tetrahedra with gmsh and solved linear and with large deflection (NLGEOM) for each load case. A difference above 10 % is flagged. Optional `physics.nonlinearMeshMM` (default about 2 mm). No plasticity. |
 
+**Large-deformation check: install CalculiX and gmsh** (separate GPL programs, not part of Anneal).
+Ubuntu: `sudo apt install calculix-ccx` and `pip install gmsh`. Windows: `pip install gmsh`, download
+CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its folder on the PATH or set
+`ANNEAL_CCX` to the full path of `ccx.exe`. Without them the check is skipped with a note; the run goes on.
+
+### Limits and checks
 
 | Check | How it is measured |
 |---|---|
@@ -258,6 +265,8 @@ Runs without these keys give the same result as 0.3.0 (checked bit for bit, see 
 | Thinnest member vs process | 2nd-percentile member thickness vs the material's minimum wall |
 | Safety factor (Hill, print-aware) | With `physics.anisotropic`: the lower of von Mises and Hill (layer strength = yield × zStrengthFactor) |
 | Buckling load factor | With `physics.buckling`: lowest linear buckling factor per load case × locking factor, vs `minBucklingFactor` (default 2) |
+| Impact | With `impact`: safety factor (and across layers) at the equivalent peak force, vs `minImpactSafetyFactor` (default 1) |
+| Large deformation | With `physics.nonlinear`: CalculiX large-deflection displacement vs `maxDisplacementMM`; warning if it differs from linear by more than 10 % |
 
 A failed check prints the fix, for example "Raise objective.volumeFraction".
 
@@ -320,7 +329,7 @@ project. Copy a built-in process in the Library to make your own printer (for ex
 your build volume and the overhang angle you trust). The *Printability* view colours faces that need
 support (amber) and faces on the build plate (dark) for any build direction; *Under* looks up from
 the plate. The checks report what the printer will see; they do not yet steer the optimization
-itself (an overhang constraint inside the optimizer is a later step).
+itself (an overhang filter inside the optimizer is in testing for a later release).
 
 In the spec file:
 
@@ -398,9 +407,9 @@ Design rules carried over from the Phase 0 spike:
 | V6 SIMP vs uniform at equal mass | about 92 % lower compliance |
 | V7 buckling vs Euler (column 4 voxels across) | raw +3.5 %, corrected −1.0 % (must be −3 % to 0 %) |
 | V8 print-aware stiffness and Hill strength | E and Ez exact; Hill = von Mises when strengths are equal |
-| V9 overhang filter | gradient = finite differences; floating material removed |
+| V9 impact force on a bar | k = EA/L and F = √(2Ek) within 2 % and 1 % |
 
-Tests: `pip install pytest` then `python -m pytest -q` (46 tests, 15–25 minutes on 2 cores).
+Tests: `pip install pytest` then `python -m pytest -q` (42 tests, 15–25 minutes on 2 cores).
 `VERIFICATION.md` lists the release evidence: tests, gate, a bit-for-bit comparison with 0.3.0, and
 independent checks with CalculiX and PrusaSlicer.
 
@@ -410,14 +419,15 @@ independent checks with CalculiX and PrusaSlicer.
 
 - Linear elastic, small displacement, static loads. Isotropic unless `physics.anisotropic` is on.
   Buckling is linear (eigenvalue) only and opt-in. No fatigue, contact, thermal, impact or
-  large-deflection analysis inside Anneal (see the roadmap for the CalculiX sidecar).
+  large-deflection analysis in Anneal's own solver: impact is an equivalent static check, and
+  large deformation is checked with CalculiX when it is installed.
 - Stress is an estimate at element centres. Support and load points have high local stress in any
   linear model, so they are left out of the peak. Check critical parts with an independent analysis.
 - FDM parts are anisotropic. Z strength can be under half the listed yield.
 - Material values are typical datasheet figures. Replace them with your own coupon data in `materials.py`.
 - Bolted holes are modelled as fully fixed walls. This is stiffer than a real joint.
-- Printability checks report. With `optimizer.overhangFilter` the optimizer also avoids overhangs
-  steeper than 45°. The support volume in the report is the space under overhangs; slicers fill it
+- Printability checks report; they do not steer the optimizer yet. The support volume in the report
+  is the space under overhangs; slicers fill it
   sparsely (on the example bracket the slicer used about 0.18 of it).
 - Flexible materials (TPU and similar, E under about 200 MPa) are outside the linear model.
 - Voxel count sets run time. On a 2-core machine: `draft` about 2 minutes per pass, `normal` about
@@ -430,9 +440,10 @@ independent checks with CalculiX and PrusaSlicer.
 
 - PicoGK backend for `kernel.py` and `geometry.py` on Windows and macOS (lattice infill, exact offsets).
 - Lattice grading from grey density, instead of thresholding it.
-- Chrono sidecar for loads from simulated events (drop, landing), as in the method document.
+- Explicit impact (Chrono or OpenCourant) for events the equivalent-static check cannot cover.
+- Overhang filter inside the optimizer (built and tested on branch verify-roadmap; held back from 0.4).
 - Minimum-size constraint that holds after thresholding (robust formulation).
-- Slicer in the loop (PrusaSlicer / OrcaSlicer command line) and a CalculiX sidecar for nonlinear checks.
+- Slicer in the loop (PrusaSlicer / OrcaSlicer command line).
 - Buckling as a constraint inside the optimizer (KS aggregate with MMA).
 
 Third-party licences: numpy, scipy, scikit-image, matplotlib (BSD-3), pyamg, trimesh, three.js (MIT),

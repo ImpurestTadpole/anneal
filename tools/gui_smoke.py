@@ -48,6 +48,23 @@ try:
         pg.wait_for_selector(f'[data-open="{pid}"]', timeout=20000)
         pg.click(f'[data-open="{pid}"]')
         pg.wait_for_selector(".stepHead", timeout=20000)
+        pg.wait_for_timeout(1500)                    # the app writes its default spec
+        pr = json.load(urllib.request.urlopen(f"{base}/api/projects/{pid}"))
+        ex = json.load(open(os.path.join(root, "examples", "bracket.json")))
+        spec0, gui0 = pr["spec"], pr.get("gui") or {}
+        spec0["anchors"], spec0["loadCases"] = ex["anchors"], ex["loadCases"]
+        gui0["anchors"] = [{} if a["role"] == "fixed" else
+                           {"forces": {"down": {"mag": 2000, "dir": "-z"}, "side": {"mag": 600, "dir": "+y"}}}
+                           for a in ex["anchors"]]
+        gui0.setdefault("keepOut", []); gui0.setdefault("keep", [])
+        req = urllib.request.Request(f"{base}/api/projects/{pid}/save", method="POST",
+                                     data=json.dumps({"spec": spec0, "gui": gui0}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req)
+        pg.goto(base)                                # open it again with the supports and loads
+        pg.wait_for_selector(f'[data-open="{pid}"]', timeout=20000)
+        pg.click(f'[data-open="{pid}"]')
+        pg.wait_for_selector(".stepHead", timeout=20000)
         heads = pg.locator(".stepHead")
         heads.nth(2).click()
         for bind in ("physics.anisotropic", "physics.buckling"):
@@ -57,23 +74,33 @@ try:
         mb = pg.locator('input[data-bind="limits.minBucklingFactor"]')
         check("goal step shows limits.minBucklingFactor", mb.count() == 1)
         mb.fill("2.5"); mb.dispatch_event("change")
+        nl = pg.locator('input[data-bind="physics.nonlinear"]')
+        check("goal step shows physics.nonlinear", nl.count() == 1)
+        nl.check()
+        pg.locator('input[data-bind="gui:impact.on"]').check()
+        pg.wait_for_timeout(500)
+        sel = pg.locator('select[data-bind="gui:impact.anchor"]')
+        check("impact editor lists the load region", sel.count() == 1 and "load-bore" in sel.inner_text())
+        ms = pg.locator('input[data-bind="gui:impact.massKg"]')
+        ms.fill("0.5"); ms.dispatch_event("change")
         pg.select_option('select[data-bind="material"]', "__custom")
         pg.wait_for_timeout(300)
         ez = pg.locator('input[data-bind="material.Ez"]')
         check("custom material shows Ez", ez.count() == 1)
         ez.fill("2400"); ez.dispatch_event("change")
         pg.locator(".stepHead").nth(3).click()
-        oh = pg.locator('input[data-bind="optimizer.overhangFilter"]')
-        check("settings step shows optimizer.overhangFilter", oh.count() == 1)
-        oh.check()
+        check("settings step has no overhang filter option",
+              pg.locator('input[data-bind="optimizer.overhangFilter"]').count() == 0)
         pg.wait_for_timeout(1500)
         pg.screenshot(path=os.path.join(wd, "gui_settings.png"), full_page=True)
         spec = json.load(urllib.request.urlopen(f"{base}/api/projects/{pid}"))["spec"]
         check("options saved to the project spec",
               spec.get("physics", {}).get("anisotropic") is True and spec.get("physics", {}).get("buckling") is True
-              and spec.get("optimizer", {}).get("overhangFilter") is True and spec["limits"].get("minBucklingFactor") == 2.5
-              and spec["material"].get("Ez") == 2400,
-              json.dumps({k: spec.get(k) for k in ("physics", "optimizer", "limits")}))
+              and spec["limits"].get("minBucklingFactor") == 2.5
+              and spec["material"].get("Ez") == 2400 and spec.get("physics", {}).get("nonlinear") is True
+              and spec.get("impact") == {"impact": {"anchor": "load-bore", "massKg": 0.5, "dropHeightMM": 1000,
+                                                    "direction": [0, 0, -1]}},
+              json.dumps({k: spec.get(k) for k in ("physics", "impact", "limits")}))
         pg.click("#navLibrary")
         pg.wait_for_timeout(1200)
         txt = pg.content()

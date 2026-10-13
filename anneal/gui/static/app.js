@@ -125,6 +125,42 @@ function sync() {
   sp.keep = g.keep.map(m => derived(m, "keep"));
   const used = new Set(sp.anchors.flatMap(a => a.loads ? Object.keys(a.loads) : []));
   if (used.size) for (const c of Object.keys(sp.loadCases)) if (!used.has(c)) delete sp.loadCases[c];
+  syncImpact();
+}
+const AXIS = { "+x": [1, 0, 0], "-x": [-1, 0, 0], "+y": [0, 1, 0], "-y": [0, -1, 0], "+z": [0, 0, 1], "-z": [0, 0, -1] };
+function impactGui() {
+  const g = S.gui;
+  if (!g.impact) {
+    const [name, c] = Object.entries(S.spec.impact || {})[0] || [null, null];
+    const dir = c ? (Object.entries(AXIS).find(([, v]) => v.join() === (c.direction || []).join()) || ["-z"])[0] : "-z";
+    g.impact = c ? { on: true, name, anchor: c.anchor, massKg: c.massKg, mode: "dropHeightMM" in c ? "height" : "speed",
+      value: c.dropHeightMM ?? c.speedMS, dir } : { on: false, name: "impact", massKg: 1, mode: "height", value: 1000, dir: "-z" };
+  }
+  return g.impact;
+}
+function syncImpact() {
+  const m = impactGui(), loads = S.spec.anchors.filter(a => a.role === "load").map(a => a.name);
+  if (!m.on || !loads.length) { delete S.spec.impact; return; }
+  if (!loads.includes(m.anchor)) m.anchor = loads[0];
+  const c = { anchor: m.anchor, massKg: +m.massKg || 0, direction: AXIS[m.dir] || [0, 0, -1] };
+  if (m.mode === "height") c.dropHeightMM = +m.value || 0; else c.speedMS = +m.value || 0;
+  S.spec.impact = { [m.name || "impact"]: c };
+}
+function impactFields() {
+  const m = impactGui(), loads = S.spec.anchors.filter(a => a.role === "load").map(a => a.name);
+  const head = chk("gui:impact.on", m.on, "Check an impact (equivalent static)",
+    "A mass hits a load region. Anneal finds the part's stiffness there and the peak force from the impact energy.", "data-rerender");
+  if (!m.on) return head;
+  if (!loads.length) return head + `<p class="help">Add a load region first (step 2). The impact hits a load region.</p>`;
+  return head + `
+    ${row("Region that is hit", `<select data-bind="gui:impact.anchor" data-kind="text">${loads.map(n => `<option ${n === m.anchor ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`)}
+    ${row("Mass, kg", num("gui:impact.massKg", m.massKg, 'min="0.001" step="any"'))}
+    ${row("Given as", `<select data-bind="gui:impact.mode" data-kind="text" data-rerender>
+      <option value="height" ${m.mode === "height" ? "selected" : ""}>Drop height, mm</option>
+      <option value="speed" ${m.mode === "speed" ? "selected" : ""}>Impact speed, m/s</option></select>`)}
+    ${row(m.mode === "height" ? "Drop height, mm" : "Impact speed, m/s", num("gui:impact.value", m.value, 'min="0" step="any"'))}
+    ${row("Direction the mass moves", `<select data-bind="gui:impact.dir" data-kind="text">${DIRS.filter(([v]) => AXIS[v]).map(([v, t]) => `<option value="${v}" ${m.dir === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
+    ${row("Minimum safety factor in the impact", num("limits.minImpactSafetyFactor", S.spec.limits.minImpactSafetyFactor, 'min="0" step="0.1" placeholder="1"'))}`;
 }
 let saveTimer = null;
 function save(now = false) {
@@ -411,6 +447,9 @@ const BODY = {
         ${chk("physics.buckling", !!(sp.physics || {}).buckling, "Check buckling of the finished part",
           "Linear buckling, corrected for the voxel model. Adds about a minute or more per load case.")}
         ${row("Minimum buckling factor", num("limits.minBucklingFactor", sp.limits.minBucklingFactor, 'min="1" step="0.1" placeholder="2"'), "A value here also turns the buckling check on.")}
+        ${chk("physics.nonlinear", !!(sp.physics || {}).nonlinear, "Check large deformation with CalculiX",
+          "Optional. Needs CalculiX and gmsh installed. Compares linear and large-deflection results of the finished part.")}
+        ${impactFields()}
       </fieldset>`;
   },
 
@@ -424,8 +463,6 @@ const BODY = {
         ${row("Penalty", num("optimizer.penalty", o.penalty ?? 3, 'min="1" max="5" step="0.25"'), "How hard grey material is punished. 3 is standard.")}
         ${row("Move limit per iteration", num("optimizer.move", o.move ?? 0.2, 'min="0.02" max="0.5" step="0.01"'))}
         ${row("Edge sharpness", num("optimizer.sharpness", o.sharpness ?? 4, 'min="0" max="16" step="1"'), "Heaviside projection. 0 turns it off; above 8 can stall.")}
-        ${chk("optimizer.overhangFilter", !!o.overhangFilter, "Design for printing without supports (45° overhang filter)",
-          "Needs a process with a build direction along X, Y or Z. Bosses and bores you keep may still need support.")}
       </fieldset>
       <fieldset><legend>Load paths</legend>
         ${chk("loadPaths.guard", lp.guard !== false, "Keep every load connected to a support", "Checks the part before the surface is made.")}

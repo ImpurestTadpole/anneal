@@ -167,13 +167,28 @@
   },
   "limits": {
     "maxDisplacementMM": 0.3,
-    "minSafetyFactor": 2.0
+    "minSafetyFactor": 2.0,
+    "minImpactSafetyFactor": 1.0
   },
   "output": {
     "smoothing": 10
   },
   "process": "FDM",
   "physics": {
-    "anisotropic": true
+    "anisotropic": true,
+    "buckling": true,
+    "nonlinear": true
+  },
+  "impact": {
+    "drop": {
+      "anchor": "load-bore",
+      "massKg": 0.5,
+      "dropHeightMM": 1000,
+      "direction": [
+        0,
+        0,
+        -1
+      ]
+    }
   }
 }

@@ -189,35 +189,37 @@ def check_anisotropic():
         f"E error {max(errs):.1e}, Hill vs von Mises {herr:.1e}"
 
 
-def check_overhang_filter():
-    """AM filter: adjoint = finite differences; floating material removed, supported kept."""
-    from .amfilter import AMFilter
-    rng = np.random.default_rng(1)
-    x = rng.uniform(0.05, 1, (7, 6, 8))
-    x[rng.uniform(size=x.shape) < 0.3] = 1e-9
-    f = AMFilter(x.shape)
-    wv = rng.normal(size=x.shape)
-    Fn = lambda z: float((f.forward(z) * wv).sum())
-    Fn(x)
-    gr = f.backward(wv)
-    err = 0.0
-    for _ in range(12):
-        idx = tuple(rng.integers(0, s) for s in x.shape)
-        e = np.zeros_like(x)
-        e[idx] = 1e-6
-        fd = (Fn(x + e) - Fn(x - e)) / 2e-6
-        err = max(err, abs(fd - gr[idx]) / max(abs(fd), 1e-6))
-    b = np.zeros((10, 10, 10))
-    b[2:5, 2:5, 0:4] = 1
-    b[6:9, 6:9, 5:8] = 1
-    y = AMFilter(b.shape).forward(b)
-    ok = err < 1e-4 and y[2:5, 2:5, 0:4].min() > 0.95 and y[6:9, 6:9, 5:8].max() < 0.05
-    return "V9 overhang filter gradient and behaviour", ok, \
-        f"gradient error {err:.1e}, floating block max {y[6:9, 6:9, 5:8].max():.3f}"
+def check_impact():
+    """Equivalent-static impact on a bar, 40 long, 10 x 10, E 1000, nu 0, held at one end and hit
+    end-on at the other: k must equal EA/L and the peak force sqrt(2 E k). The anchor regions sit
+    just outside the bar so each takes exactly one layer of nodes (anchors take nodes within half a
+    voxel of their region)."""
+    from .problem import Problem
+    from .run import impact_check
+    spec = {"name": "v9", "designSpace": {"type": "box", "min": [0, 0, 0], "max": [40, 10, 10]},
+            "material": {"E": E0, "nu": 0.0, "density": 1.0, "yield": 100.0}, "resolution": {"voxelMM": 1.0},
+            "anchors": [{"name": "wall", "role": "fixed", "dofs": "x",
+                         "region": {"type": "box", "min": [-2, -1, -1], "max": [-0.4, 11, 11]}},
+                        {"name": "end", "role": "load", "region": {"type": "box", "min": [40.4, -1, -1], "max": [42, 11, 11]},
+                         "loads": {"axial": [-1, 0, 0]}}],
+            "impact": {"hit": {"anchor": "end", "massKg": 2.0, "speedMS": 1.0, "direction": [-1, 0, 0]}}}
+    p = Problem(spec=spec, log=lambda *a: None).build()
+    fill = np.where(p.active, 1.0, 0.0)
+    r = impact_check(p, fill, 1.0, lambda *a: None)["hit"]
+    k_exact = E0 * 100.0 / 40.0
+    F_exact = np.sqrt(2 * 1000.0 * k_exact)            # E = 0.5 * 2 kg * (1 m/s)^2 = 1 J = 1000 N mm
+    ek = r["stiffnessNperMM"] / k_exact - 1
+    ef = r["peakForceN"] / F_exact - 1
+    # The hit is spread as equal forces on the region's nodes (as Anneal spreads every load). The
+    # corner and edge nodes then move a little more than under a uniform pressure, so k comes out
+    # about 1 % low and the force about 0.5 % low. Allowed: 2 % on k, 1 % on the force.
+    ok = abs(ek) < 0.02 and abs(ef) < 0.01
+    return "V9 impact force on a bar = sqrt(2 E k), k = EA/L", ok, \
+        f"stiffness {100 * ek:+.2f}%, force {100 * ef:+.2f}% (limits 2 % and 1 %)"
 
 
 CHECKS = [check_rigid_body, check_tension, check_cantilever, check_partial_volume,
-          check_determinism, check_simp, check_buckling, check_anisotropic, check_overhang_filter]
+          check_determinism, check_simp, check_buckling, check_anisotropic, check_impact]
 
 
 def run_all(log=print):

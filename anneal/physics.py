@@ -163,3 +163,32 @@ def buckling(fem, K, u_red, E_scale, n_modes=4, tol=1e-6):
 def _has_rtol():
     import inspect
     return "rtol" in inspect.signature(sla.cg).parameters
+
+
+# ------------------------------------------------------------------ impact (equivalent static)
+G_MS2 = 9.80665
+
+
+def impact_energy(case, where="impact"):
+    """Kinetic energy (N mm) and speed (m/s) of an impact case: massKg with speedMS or dropHeightMM."""
+    try:
+        m = float(case["massKg"])
+    except (KeyError, TypeError, ValueError):
+        raise PhysicsError(f"{where}: give massKg, the mass that hits the part (kg).") from None
+    if m <= 0:
+        raise PhysicsError(f"{where}: massKg must be more than 0.")
+    if ("speedMS" in case) == ("dropHeightMM" in case):
+        raise PhysicsError(f"{where}: give either speedMS (impact speed, m/s) or dropHeightMM (free-fall height, mm), "
+                           f"not both and not neither.")
+    if "speedMS" in case:
+        v = float(case["speedMS"])
+    else:
+        v = float(np.sqrt(2 * G_MS2 * float(case["dropHeightMM"]) / 1000.0))
+    if v <= 0:
+        raise PhysicsError(f"{where}: the impact speed must be more than 0.")
+    return 0.5 * m * v * v * 1000.0, v
+
+
+def impact_peak_force(energy_Nmm, k_N_per_mm):
+    """Peak force when a rigid mass is stopped by a linear spring of stiffness k: E = F^2 / (2k)."""
+    return float(np.sqrt(2.0 * energy_Nmm * k_N_per_mm))
