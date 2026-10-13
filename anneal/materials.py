@@ -74,6 +74,11 @@ PROCESSES = {
 # Ez, nuZ, Gz (optional): stiffness across the layers for print-aware runs (spec physics.anisotropic).
 MAT_KEYS = ["E", "nu", "density", "yield", "minWallMM", "process", "zStrengthFactor", "Ez", "nuZ", "Gz",
             "note", "source"]
+# Temperature (0.4.2): alpha, alphaZ in 1/K (expansion in the layers / across the layers); maxServiceTempC in
+# degrees C; tempDerating [[tempC, E factor, yield factor], ...] relative to the listed E and yield. The row
+# with factors 1 is the temperature at which the listed E and yield hold. No built-in value without a source.
+THERMAL_KEYS = ["alpha", "alphaZ", "maxServiceTempC", "tempDerating"]
+MAT_KEYS += THERMAL_KEYS
 PROC_KEYS = ["minWallMM", "minHoleMM", "maxOverhangDeg", "supportsAllowed", "enclosedVoids", "buildVolumeMM",
              "buildDirection", "zStrengthFactor", "layerMM", "note", "method", "axes", "setups", "fixture",
              "toolDiameterMM", "maxDepthToDiameter"]
@@ -207,10 +212,62 @@ def validate_material(m, where="Material"):
     for k, lo, hi, hint in checks:
         if k in m and not lo <= m[k] <= hi:
             raise LibraryError(f"{where}: {k} = {m[k]:g} is outside {lo:g} to {hi:g} {hint}.")
+    _validate_thermal(m, where)
     for k in ("process", "note", "source", "name"):
         if k in m and m[k] is not None:
             m[k] = str(m[k])
     return m
+
+
+def _validate_thermal(m, where):
+    """Range checks for the temperature keys (all optional). Empty values are removed."""
+    for k in ("alpha", "alphaZ", "maxServiceTempC"):
+        if m.get(k) in (None, ""):
+            m.pop(k, None)
+            continue
+        m[k] = _num(m[k], k, where)
+    for k in ("alpha", "alphaZ"):
+        if k in m and not 0 < m[k] < 1e-3:
+            raise LibraryError(f"{where}: {k} = {m[k]:g} 1/K is outside 0 to 0.001. Give the expansion coefficient in "
+                               f"1/K: ppm/K × 1e-6 = 1/K (aluminium 23 ppm/K = 2.3e-5 1/K).")
+    if "maxServiceTempC" in m and not -273.15 < m["maxServiceTempC"] < 3000:
+        raise LibraryError(f"{where}: maxServiceTempC = {m['maxServiceTempC']:g} °C is outside -273 to 3000 °C. "
+                           f"Give the service limit in °C: (°F − 32) / 1.8 = °C.")
+    if m.get("tempDerating") in (None, "", []):
+        m.pop("tempDerating", None)
+        return m
+    m["tempDerating"] = derating_table(m["tempDerating"], where)
+    return m
+
+
+def derating_table(raw, where="Material"):
+    """Check a tempDerating table: rows [tempC, E factor, yield factor], sorted by temperature (strictly
+    rising), factors in (0, 2], and one row with both factors 1 (where the listed E and yield hold).
+    A string 'T:fE:fY; T:fE:fY' (from a CSV cell) is accepted. Returns a list of float triples."""
+    pre = f"{where}: " if where else ""
+    if isinstance(raw, str):
+        rows = [r for r in re.split(r"[;|\n]", raw) if r.strip()]
+        raw = [[c for c in re.split(r"[\s:,/]+", r.strip()) if c] for r in rows]
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise LibraryError(f"{pre}tempDerating must be a list of rows [tempC, E factor, yield factor].")
+    out = []
+    for i, row in enumerate(raw, start=1):
+        if not isinstance(row, (list, tuple)) or len(row) != 3:
+            raise LibraryError(f"{pre}tempDerating row {i} must be three numbers [tempC, E factor, yield factor], "
+                               f"not {row!r}.")
+        t, fe, fy = (_num(v, f"tempDerating row {i}", where or "tempDerating") for v in row)
+        for name, f in (("E factor", fe), ("yield factor", fy)):
+            if not 0 < f <= 2:
+                raise LibraryError(f"{pre}tempDerating row {i}: {name} {f:g} must be more than 0 and at most 2 "
+                                   f"(a factor on the listed value; 1 = no change).")
+        if out and t <= out[-1][0]:
+            raise LibraryError(f"{pre}tempDerating row {i}: temperature {t:g} °C is not above the row before "
+                               f"({out[-1][0]:g} °C). Sort the rows from cold to hot, one row per temperature.")
+        out.append([t, fe, fy])
+    if not any(abs(fe - 1) < 1e-12 and abs(fy - 1) < 1e-12 for _, fe, fy in out):
+        raise LibraryError(f"{pre}tempDerating has no reference row. Add the row [tempC, 1, 1] for the temperature "
+                           f"at which the listed E and yield were measured (usually 20 or 23 °C).")
+    return out
 
 
 def validate_process(p, where="Process"):
@@ -271,6 +328,12 @@ FIELD_WORDS = [  # (field, words that identify a column), first match wins
     ("Ez", [r"\bz\b.*modulus", r"modulus.*\bz\b", r"vertical.*modulus", r"modulus.*(vertical|xz|zx)"]),
     ("yieldZ", [r"\bz\b.*(yield|strength)", r"(yield|strength).*\bz\b", r"layer.*(strength|adhesion)", r"interlayer",
                 r"vertical.*strength", r"strength.*(vertical|xz|zx)"]),
+    ("alphaZ", [r"^alpha\s*z$", r"^α\s*z$", r"\bcte\b.*\bz\b", r"expansion.*\bz\b", r"^alpha.*\bz\b"]),
+    ("alpha", [r"^alpha$", r"^α$", r"\bcte\b", r"thermal expansion", r"expansion coeff",
+               r"coefficient of (linear )?(thermal )?expansion"]),
+    ("maxServiceTempC", [r"^maxservicetempc$", r"max.*service", r"service.*temp", r"\bhdt\b", r"heat deflection",
+                         r"glass transition", r"^tg\b", r"max(imum)?\s*(use|operating)\s*temp"]),
+    ("tempDerating", [r"^tempderating$", r"derating"]),
     ("name", [r"^name$", r"material", r"^grade$", r"product", r"^filament$"]),
     ("E", [r"young", r"tensile modulus", r"elastic modulus", r"modulus of elasticity", r"^e$", r"^e[\s_(\[]",
            r"^modulus", r"flexural modulus"]),
@@ -286,6 +349,7 @@ FIELD_WORDS = [  # (field, words that identify a column), first match wins
 
 def _field_and_unit(header):
     h = header.strip().lower().replace("³", "3").replace("²", "2")
+    h = re.sub(r"\(\s*m\s*[·*.]?\s*(°?c|k)\s*\)", r"m\1", h)    # µm/(m·K) -> µm/mk: one bracket level
     unit = None
     m = re.search(r"[\[(]\s*([^\])]+?)\s*[\])]", h)
     if m:
@@ -299,8 +363,62 @@ def _field_and_unit(header):
     h = h.replace("_", " ").strip()
     for field, pats in FIELD_WORDS:
         if any(re.search(p, h) for p in pats):
+            if field == "maxServiceTempC" and unit is None and h == "maxservicetempc":
+                unit = "°c"                      # the Anneal key name carries its unit
             return field, unit, h
     return None, unit, h
+
+
+# Expansion coefficient units -> factor to 1/K; temperature units -> converter to degrees C
+CTE_UNIT = {"1/k": 1.0, "/k": 1.0, "k^-1": 1.0, "k-1": 1.0, "1/°c": 1.0, "/°c": 1.0, "°c^-1": 1.0, "1/c": 1.0,
+            "ppm/k": 1e-6, "ppm/°c": 1e-6, "ppm/c": 1e-6, "um/mk": 1e-6, "um/m/k": 1e-6, "um/m°c": 1e-6,
+            "um/m/°c": 1e-6, "um/mc": 1e-6, "um/m/c": 1e-6, "10^-6/k": 1e-6, "10-6/k": 1e-6, "1e-6/k": 1e-6,
+            "e-6/k": 1e-6, "10^-6/°c": 1e-6, "1e-6/°c": 1e-6, "mm/m/k": 1e-3, "1/°f": 1.8, "/°f": 1.8,
+            "ppm/°f": 1.8e-6, "uin/in°f": 1.8e-6, "uin/in/°f": 1.8e-6, "uin/in/f": 1.8e-6, "10^-6/°f": 1.8e-6}
+TEMP_UNIT = {"°c": lambda t: t, "c": lambda t: t, "celsius": lambda t: t,
+             "°f": lambda t: (t - 32.0) / 1.8, "f": lambda t: (t - 32.0) / 1.8, "fahrenheit": lambda t: (t - 32.0) / 1.8,
+             "k": lambda t: t - 273.15, "kelvin": lambda t: t - 273.15}
+
+
+def _norm_unit(u):
+    u = (u or "").lower().replace(" ", "").replace("µ", "u").replace("μ", "u").replace("℃", "°c").replace("℉", "°f")
+    u = u.replace("deg", "°").replace("°°", "°").replace("·", "").replace("*", "").replace("(", "").replace(")", "")
+    return u.replace("m.k", "mk").replace("m.°c", "m°c")
+
+
+def _thermal_value(num, u, field):
+    """alpha / alphaZ in 1/K, maxServiceTempC in degrees C, from a number and its unit."""
+    n = _norm_unit(u)
+    if field in ("alpha", "alphaZ"):
+        if n:
+            if n not in CTE_UNIT:
+                raise LibraryError(f"unit '{u}' is not known for {field} (use 1/K, ppm/K, µm/(m·K) or 1/°F)")
+            return float(f"{num * CTE_UNIT[n]:.12g}")      # 25 ppm/K -> 2.5e-05, not 2.4999999999999998e-05
+        if 0 < num < 1e-3:
+            return num                                  # only 1/K gives a number this small
+        raise LibraryError(f"{field} = {num:g} has no unit. Write ppm/K or 1/K in the header, for example "
+                           f"'CTE (ppm/K)'")
+    if not n:
+        raise LibraryError(f"{field} = {num:g} has no unit. Write °C or °F in the header, for example 'HDT (°C)'")
+    if n not in TEMP_UNIT:
+        raise LibraryError(f"unit '{u}' is not known for a temperature (use °C, °F or K)")
+    return TEMP_UNIT[n](num)
+
+
+def _derating_cell(raw, unit):
+    """tempDerating from a JSON list or a CSV cell 'T:fE:fY; T:fE:fY'. A °F or K unit converts the temperatures."""
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    n = _norm_unit(unit)
+    if n and n not in TEMP_UNIT:
+        raise LibraryError(f"unit '{unit}' is not known for the tempDerating temperatures (use °C, °F or K)")
+    if n:
+        conv = TEMP_UNIT[n]
+        if isinstance(raw, str):
+            raw = [[c for c in re.split(r"[\s:,/]+", r.strip()) if c] for r in re.split(r"[;|\n]", raw) if r.strip()]
+        raw = [[conv(_num(r[0], "tempDerating temperature", "tempDerating")), *r[1:]]
+               if isinstance(r, (list, tuple)) and r else r for r in raw]
+    return derating_table(raw, "")
 
 
 def _value(raw, unit, field):
@@ -321,6 +439,8 @@ def _value(raw, unit, field):
         if not m:
             raise LibraryError(f"'{raw}' is not a number")
         num, cell_unit = float(m.group(1)), (m.group(2).strip().lower().replace(" ", "").replace("³", "3") or None)
+    if field in ("alpha", "alphaZ", "maxServiceTempC"):
+        return _thermal_value(num, cell_unit or unit, field)
     u = (cell_unit or unit or "").lower()
     if u:
         if u not in UNIT:
@@ -350,6 +470,15 @@ def _material_from_fields(fields, where):
             m[k] = str(fields[k]).strip()
     if fields.get("yieldZ") is not None and fields.get("yield"):
         m["zStrengthFactor"] = round(min(1.0, fields["yieldZ"] / fields["yield"]), 3)
+    for k in THERMAL_KEYS:
+        if fields.get(k) is not None:
+            m[k] = fields[k]
+    if fields.get("source"):
+        m["source"] = str(fields["source"]).strip()
+    col = fields.get("_maxServiceColumn")
+    if col and "maxServiceTempC" in m:      # HDT, Tg and a service limit are not the same: keep the column name
+        note = f"maxServiceTempC from column '{col}'"
+        m["source"] = f"{m['source']}; {note}" if m.get("source") else note
     if m.get("process") and m["process"].upper() in ("FDM", "FFF"):
         m["process"] = "FDM"
     elif m.get("process") and m["process"].upper() in ("SLS", "MJF", "HP MJF"):
@@ -404,7 +533,12 @@ def _parse_csv(text):
             if not f or f in fields:
                 continue
             try:
-                fields[f] = cell.strip() if f in ("name", "process", "note") else _value(cell, unit, f)
+                if f == "tempDerating":
+                    fields[f] = _derating_cell(cell, unit)
+                else:
+                    fields[f] = cell.strip() if f in ("name", "process", "note") else _value(cell, unit, f)
+                if f == "maxServiceTempC" and _field_and_unit(header[j])[2] != "maxservicetempc":
+                    fields["_maxServiceColumn"] = header[j].strip()
             except LibraryError as e:
                 err = f"Row {i}, column '{header[j]}': {e}"
                 break
@@ -449,7 +583,12 @@ def _parse_json(text):
                     f = key
                 if not f or f == "name":
                     continue
-                fields[f] = raw if f in ("process", "note") else _value(raw, unit, f)
+                if f == "tempDerating":
+                    fields[f] = _derating_cell(raw, unit)
+                    continue
+                if f == "maxServiceTempC" and key != "maxServiceTempC":
+                    fields["_maxServiceColumn"] = key
+                fields[f] = raw if f in ("process", "note", "source") else _value(raw, unit, f)
             out[str(name)] = _material_from_fields(fields, f"'{name}'")
         except LibraryError as e:
             problems.append(f"'{name}': {e}")
