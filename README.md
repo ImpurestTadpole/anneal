@@ -251,6 +251,106 @@ In the app: on a load region, step 2 shows a "Torque" row with Mx, My and Mz in 
 case, under the force. Leave the fields empty for no torque. The viewer shows the torque as a
 curved arrow about its axis. Step 3 has the field "Maximum twist of a load region, degrees".
 
+### Temperature: thermal stress and derating (0.4.2)
+
+Use this when the part is hotter or colder in service than at assembly. Anneal then checks two
+effects on the finished part:
+
+- **Derating:** the material is softer and weaker when it is hot. E and yield come from the
+  material's derating table at the case temperature.
+- **Thermal stress:** the part expands or shrinks. Supports that stop this movement cause stress.
+  A part that can move freely expands with no stress.
+
+```jsonc
+"material": "AlSi10Mg-LPBF",            // the material needs alpha (see "Materials")
+"thermal": { "referenceTempC": 20, "cases": { "down": 60, "coldStart": -20 } },
+"limits":  { "maxDisplacementMM": 0.30, "minSafetyFactor": 2.0, "displacementIncludesThermal": false }
+```
+
+| Key | Unit | Meaning |
+|---|---|---|
+| `thermal.referenceTempC` | °C | The temperature at which the part has no thermal stress (usually the assembly temperature). Default 20. |
+| `thermal.cases` | °C | `{ "caseName": temperature }`. One uniform part temperature per load case. |
+| `limits.displacementIncludesThermal` | true / false | Default false: `maxDisplacementMM` checks the mechanical displacement only. |
+
+Rules:
+
+- **Units.** All temperatures are in °C. The temperature change is ΔT = case temperature −
+  reference temperature. A change of 1 °C is a change of 1 K, so the expansion coefficient `alpha`
+  is in 1/K. 1 ppm/K = 1e-6 1/K (aluminium is about 23 ppm/K = 2.3e-5 1/K).
+- **A case name that is also a mechanical load case** (in `loads`, `torques`, `pressure` or
+  `gravity`): that case runs at that temperature, with its mechanical loads and the thermal strain
+  together.
+- **A new case name:** a thermal-only load case. It has no mechanical load; the part only expands
+  or shrinks against its supports. Use it for the coldest or hottest state with no service load.
+- **A mechanical load case with no temperature** runs at the reference temperature: no thermal
+  strain and no derating, as in 0.4.1.
+- **A spec without `thermal`** gives the same results as 0.4.1, bit for bit.
+- **The material needs `alpha`** (see "Materials"). A thermal case on a material without `alpha`
+  stops the run with an error that names the key. Above the material's `maxServiceTempC` the run
+  stops, because the linear model is not valid there. Choose a material with a higher service
+  temperature.
+
+**The displacement rule.** Anneal reports two displacements for each case: the mechanical
+displacement (the as-built solve without the thermal strain) and the thermal displacement. By
+default `maxDisplacementMM` checks the mechanical displacement. A free part that expands is not
+"too flexible", and a large expansion must not hide a part that is too soft. Set
+`limits.displacementIncludesThermal: true` when a clearance or an alignment must hold with the
+total displacement.
+
+**Held supports overestimate thermal stress.** Supports in Anneal do not move and do not expand.
+Two or more supports that hold all three directions (`"dofs": "xyz"`) stop all expansion between
+them. A real bolted joint can slip a little, and a slotted hole lets the part slide. The thermal
+stress in the model is then too high, sometimes by far. Hold only the directions that the joint
+really holds:
+
+```jsonc
+{ "name": "bolt-1", "role": "fixed", "dofs": "xyz", "region": { ... } },   // locating bolt: holds the part
+{ "name": "bolt-2", "role": "fixed", "dofs": "yz",  "region": { ... } }    // slot along X: the part can slide in X
+```
+
+Use `"dofs": "z"` (only the bolt axis, here Z) for a clearance hole where the part can slip in the
+plane. The run gives a warning when two or more supports hold all three directions and a case has
+a temperature change.
+
+**The frame expands too.** Anneal's supports do not expand. A part bolted to a frame that also
+expands sees only the difference. Use an effective temperature change:
+ΔT_eff = ΔT × (α_part − α_frame) / α_part. This is exact for the distance between two supports and
+approximate elsewhere. Write it in the project notes (see `docs/guides/NEW-PART.md` section 9).
+
+What Anneal models:
+
+- One uniform temperature per load case.
+- Linear thermal strain α·ΔT. With `physics.anisotropic`, `alphaZ` applies across the layers.
+- Derated E and yield at the case temperature, by linear interpolation of `tempDerating`.
+- Thermal stress in the as-built re-solve, the FEA study, the safety factor, the Hill and layer
+  checks, buckling (the thermal stress is part of the pre-stress) and the CalculiX check.
+- Impact stays mechanical. It uses the derated E and yield of its case.
+
+What Anneal does not model:
+
+- **The optimizer uses the mechanical loads only.** The thermal load enters at the as-built check.
+  If a thermal check fails, raise `volumeFraction`, let the joints slide (`dofs`), or choose
+  another material.
+- Temperature gradients and heat flow (no conduction solve).
+- Different temperatures in one part, and properties that change inside one part.
+- Creep and stress relaxation at temperature.
+- Slip in bolted joints, and expansion of the frame or the supports.
+- Residual stress and warping from printing.
+
+**No value without a source.** Anneal does not invent thermal data. A built-in material has
+`alpha`, `maxServiceTempC` or `tempDerating` only where a datasheet or paper gives the value; its
+`source` text names the document. For other materials, add values from your datasheet or a test.
+HDT (heat deflection temperature) and Tg (glass transition) are not the same as a service limit;
+for PLA (Tg about 55–60 °C) choose the limit with care.
+
+In the app: step 3 has a "Temperature" fieldset. Type the reference temperature and a temperature
+for each load case; leave a case empty to run it at the reference temperature. *Add a thermal-only
+case* adds a case with a temperature and no mechanical load. The check box "The displacement limit
+includes the thermal displacement" sets `limits.displacementIncludesThermal`. The spec gets the
+`thermal` key only when a case has a temperature, so old projects stay the same. The Result step
+shows each case's temperature, ΔT, mechanical and thermal displacement.
+
 ### Objective
 
 - `volumeFraction`: share of the design space that stays (0.03–0.95).
@@ -340,6 +440,9 @@ CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its f
 | Impact | With `impact`: safety factor (and across layers) at the equivalent peak force, vs `minImpactSafetyFactor` (default 1) |
 | Large deformation | With `physics.nonlinear`: CalculiX large-deflection displacement vs `maxDisplacementMM`; warning if it differs from linear by more than 10 % |
 | Twist of load regions | With `limits.maxRotationDeg` (0.4.1): least-squares rigid rotation of each load region's nodes, in degrees, vs the limit |
+| Service temperature vs material limit | With `thermal` (0.4.2): each case temperature vs the material's `maxServiceTempC` |
+| Thermal stress share | With `thermal` (0.4.2): the thermal part of the peak stress in each case |
+| Held supports (warning) | With `thermal` (0.4.2): two or more supports hold all three directions and a case has ΔT ≠ 0. Held supports overestimate thermal stress |
 
 A failed check prints the fix, for example "Raise objective.volumeFraction".
 
@@ -376,6 +479,27 @@ name,E (GPa),Poisson,density (g/cm3),yield (MPa),Z strength (MPa),process,min wa
 PETG-CF Bambu,3.8,0.35,1.25,52,30,FDM,0.8,Bambu Lab TDS 2024
 Inconel 718,200,0.29,8.19,1034,,LPBF,0.4,
 ```
+
+Temperature keys (0.4.2, optional; needed only for a `thermal` spec):
+
+| Key | Unit | Meaning |
+|---|---|---|
+| `alpha` | 1/K | Thermal expansion coefficient. For printed parts: in the layers. |
+| `alphaZ` | 1/K | Expansion across the layers, for print-aware runs. If left out, alphaZ = alpha. |
+| `maxServiceTempC` | °C | Service limit. A case above it stops the run. |
+| `tempDerating` | list | `[[tempC, E factor, yield factor], ...]`, sorted by temperature. The factors multiply the listed E and yield, are more than 0 and at most 2, and the table must have a row at the reference temperature with factors 1. Between rows Anneal interpolates linearly. |
+
+```json
+"material": { "E": 70000, "nu": 0.33, "density": 2.68, "yield": 220, "alpha": 2.1e-5, "maxServiceTempC": 150,
+              "tempDerating": [[20, 1, 1], [100, 0.95, 0.9], [150, 0.9, 0.8]], "source": "datasheet name and page" }
+```
+
+These values show the format only. They are not data for a real alloy. In the app the expansion
+fields show 1/K and also take ppm/K: type `23` or `23 ppm/K` for 2.3e-5 1/K. A number of 0.001 or
+more is read as ppm/K. Import files take `alpha` in 1/K, 1/°C, ppm/K or µm/(m·K) (`um/m/K`), and
+temperatures in °C or °F. Columns named "CTE", "thermal expansion" or "alpha" become `alpha`;
+"CTE Z" or "alpha z" become `alphaZ`; "max service", "HDT" or "glass transition" become
+`maxServiceTempC`, and the `source` keeps the column name so you can see which one it was.
 
 Every change to your library (added, replaced, edited, removed, with the source file and the values
 before and after) is kept in the library's change history: Library page, or `anneal materials log`.
@@ -447,7 +571,7 @@ model ──► voxelize (fill fractions) ──► anchors, keep-outs, frozen r
 | `materials.py` | Built-in and your materials and processes, import (CSV/JSON, units), change history | Library |
 | `dfm.py` | Build volume, wall, hole, overhang and support, best direction, cavities, layer strength | Printability |
 | `gui/server.py`, `gui/desktop.py`, `gui/static/` | Local server, desktop window, page (three.js r160, MIT, included) | GUI |
-| `validate.py` | 6-check solver gate | Validation |
+| `validate.py` | Solver gate (`anneal validate`) | Validation |
 
 Design rules carried over from the Phase 0 spike:
 
@@ -481,6 +605,12 @@ Design rules carried over from the Phase 0 spike:
 | V7 buckling vs Euler (column 4 voxels across) | raw +3.5 %, corrected −1.0 % (must be −3 % to 0 %) |
 | V8 print-aware stiffness and Hill strength | E and Ez exact; Hill = von Mises when strengths are equal |
 | V9 impact force on a bar | k = EA/L and F = √(2Ek) within 2 % and 1 % |
+| V10 patch test (e9 and hex8fi) | a linear displacement field is exact |
+| V12 free bar, uniform ΔT (0.4.2) | end displacement α·ΔT·L to 1e-10, no stress |
+| V13 bar on rollers, ΔT (0.4.2) | σx = −E·α·ΔT exactly, σy = σz = 0 |
+| V14 free beam, linear ΔT through the depth (0.4.2) | curvature α·(ΔT_top − ΔT_bottom)/h |
+
+With 0.4.2 the gate must print "GATE: OPEN - 14 of 14".
 
 Tests: `pip install pytest` then `python -m pytest -q` (52 tests, 25–35 minutes on 2 cores).
 `VERIFICATION.md` lists the release evidence: tests, gate, a bit-for-bit comparison with 0.3.0, and
@@ -491,9 +621,12 @@ independent checks with CalculiX and PrusaSlicer.
 ## 7. Limits — read before you print
 
 - Linear elastic, small displacement, static loads. Isotropic unless `physics.anisotropic` is on.
-  Buckling is linear (eigenvalue) only and opt-in. No fatigue, contact, thermal, impact or
+  Buckling is linear (eigenvalue) only and opt-in. No fatigue, contact, heat flow, impact or
   large-deflection analysis in Anneal's own solver: impact is an equivalent static check, and
   large deformation is checked with CalculiX when it is installed.
+- Temperature (0.4.2): one uniform temperature per load case, checked on the finished part only.
+  The optimizer does not see the thermal load. Held supports overestimate thermal stress (see
+  "Temperature" in section 3).
 - Stress is an estimate at element centres. Support and load points have high local stress in any
   linear model, so they are left out of the peak. Check critical parts with an independent analysis.
 - FDM parts are anisotropic. Z strength can be under half the listed yield.
