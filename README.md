@@ -192,6 +192,8 @@ geometry.
 - `dofs` (fixed only): which directions are held, `"xyz"` (bolted) or for example `"z"` (resting on a surface).
 - `loads` (load only): `{ "caseName": [Fx, Fy, Fz] }` in newtons. The force is spread evenly over
   the selected nodes. Different anchors can share case names.
+- `torques` (load only, 0.4.1): `{ "caseName": [Mx, My, Mz] }` in newton-metres (N·m). See
+  "Torque on a load region" below.
 - `region`: what to select. Types: `box` (min, max), `obox` (center, normal, xdir, size: an oriented
   box, which the app makes when you click a flat face), `sphere` (center, r), `cylinder` (from, to, r),
   `pipe` (from, to, r, rIn). **For a hole that is already in the model, use a `pipe` that
@@ -201,6 +203,53 @@ geometry.
     clearance hole (ISO 273 medium fit). Bolts M2–M12, or `"d"` for any diameter.
   - `{"boltCircle": {"at": […], "axis": […], "dia": 40, "count": 4, "bolt": "M5"}}`
   - `{"pad": {"at": […], "normal": [1,0,0], "w": 30, "h": 30, "t": 3}}` — a flat mounting pad.
+
+### Torque on a load region (0.4.1)
+
+A torque is a pure moment: it turns the region but does not push it. Use it for a drive shaft in
+a bore, a lever hub or a motor flange.
+
+```json
+{ "name": "hub", "role": "load", "region": { "type": "pipe", "from": [0,0,-5], "to": [0,0,5], "r": 6, "rIn": 4 },
+  "torques": { "drive": [0, 0, 12.5] },
+  "loads":   { "drive": [0, 200, 0] } }
+```
+
+- Units: **N·m**. Anneal multiplies by 1000 and uses N·mm inside the solver. Do not enter N·mm.
+- `[Mx, My, Mz]` is a vector about the X, Y and Z axes. The sign follows the right-hand rule:
+  point the right thumb along the vector; the fingers show the turn direction.
+- Case names are the same as in `loads`. A torque and a force with the same case name act together.
+  A case can have a torque and no force.
+- `impact` stays a force. An impact on a load region that has only a torque gives an error.
+
+How Anneal puts the torque on the nodes:
+1. Anneal finds the centre (the mean position) of the region's nodes on the part.
+2. Each node gets a force at a right angle to the line from the centre to the node. The force
+   increases linearly with the distance from the turn axis.
+3. Anneal sets the size so that the forces add up to zero and their moment about the centre is
+   exactly the torque you gave. This is true for any shape of region, also a one-sided one.
+
+This is the same as a rigid hub with a linear shear distribution (the "spider" or RBE3 model in
+commercial FEA). It is the smallest set of node forces that gives the torque. The model has no
+key, no spline, no contact and no slip in the bore. The report states this rule.
+
+If all the nodes of the region are on one line, a torque about that line has no lever arm. Anneal
+then stops with an error. Select a larger region.
+
+**Torque is not bolt preload.** A torque load turns the part in service (a shaft drives a hub).
+Bolt preload is the clamp force that a tightening torque makes in a bolt; it pulls the joint
+together along the bolt axis. Anneal 0.4.1 does not model bolt preload. Do not enter a bolt's
+tightening torque as a `torques` value.
+
+`limits.maxRotationDeg` (optional): the largest permitted twist of a load region, in degrees.
+The twist is the rigid rotation that fits the region's node displacements best (least squares).
+The result and the report give the twist per load region and load case. Anneal checks the limit
+after the run. The optimizer does not use it: to get a stiffer part in torsion, lower
+`maxDisplacementMM` or raise `volumeFraction`.
+
+In the app: on a load region, step 2 shows a "Torque" row with Mx, My and Mz in N·m for each load
+case, under the force. Leave the fields empty for no torque. The viewer shows the torque as a
+curved arrow about its axis. Step 3 has the field "Maximum twist of a load region, degrees".
 
 ### Objective
 
@@ -290,6 +339,7 @@ CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its f
 | Buckling load factor | With `physics.buckling`: lowest linear buckling factor per load case × locking factor, vs `minBucklingFactor` (default 2) |
 | Impact | With `impact`: safety factor (and across layers) at the equivalent peak force, vs `minImpactSafetyFactor` (default 1) |
 | Large deformation | With `physics.nonlinear`: CalculiX large-deflection displacement vs `maxDisplacementMM`; warning if it differs from linear by more than 10 % |
+| Twist of load regions | With `limits.maxRotationDeg` (0.4.1): least-squares rigid rotation of each load region's nodes, in degrees, vs the limit |
 
 A failed check prints the fix, for example "Raise objective.volumeFraction".
 

@@ -24,6 +24,80 @@ def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name, detail)
 
 
+def get_project(pid):
+    return json.load(urllib.request.urlopen(f"{base}/api/projects/{pid}"))
+
+
+def open_in_page(pg, pid, step=None):
+    pg.goto(base)
+    pg.wait_for_selector(f'[data-open="{pid}"]', timeout=20000)
+    pg.click(f'[data-open="{pid}"]')
+    pg.wait_for_selector(".stepHead", timeout=20000)
+    pg.wait_for_timeout(1200)                        # openProject saves at once
+    if step is not None and pg.locator(f'.stepHead[data-step="{step}"][aria-expanded="true"]').count() == 0:
+        pg.locator(f'.stepHead[data-step="{step}"]').click()
+        pg.wait_for_timeout(300)
+
+
+def torque_checks(pg, pid, stl):
+    """0.4.1 torque load (PLAN 4A, T9): torque rows, maxRotationDeg, save and reload, old projects."""
+    open_in_page(pg, pid, step=1)
+    rows = pg.locator("[data-torque-row]")
+    check("load anchor shows a torque row per load case", rows.count() == 2, str(rows.count()))
+    i = int(rows.first.get_attribute("data-torque-row"))
+    name = get_project(pid)["spec"]["anchors"][i]["name"]
+    check("no torques key before a torque is set", "torques" not in get_project(pid)["spec"]["anchors"][i])
+    mz = pg.locator(f'input[data-torque="{i}.down.2"]')
+    mz.fill("12.5"); mz.dispatch_event("change")
+    pg.wait_for_timeout(1000)
+    a = get_project(pid)["spec"]["anchors"][i]
+    check("a torque goes into the spec as torques (N·m)", a.get("torques") == {"down": [0, 0, 12.5]}, json.dumps(a.get("torques")))
+    pg.locator(".stepHead").nth(2).click()
+    pg.wait_for_timeout(300)
+    mr = pg.locator('input[data-bind="limits.maxRotationDeg"]')
+    check("goal step shows limits.maxRotationDeg", mr.count() == 1)
+    mr.fill("1.5"); mr.dispatch_event("change")
+    pg.wait_for_timeout(1000)
+    check("maxRotationDeg saved", get_project(pid)["spec"]["limits"].get("maxRotationDeg") == 1.5)
+    open_in_page(pg, pid, step=1)                     # reload the page and open the project again
+    a = get_project(pid)["spec"]["anchors"][i]
+    v = pg.locator(f'input[data-torque="{i}.down.2"]').input_value()
+    check("torque holds after reload", a.get("torques") == {"down": [0, 0, 12.5]} and float(v or 0) == 12.5,
+          f"{json.dumps(a.get('torques'))} field={v}")
+    check("the anchor keeps its name and forces", a["name"] == name and a.get("loads", {}).get("down") == [0, 0, -2000])
+    pg.screenshot(path=os.path.join(wd, "gui_torque.png"), full_page=True)
+    mz = pg.locator(f'input[data-torque="{i}.down.2"]')
+    mz.fill(""); mz.dispatch_event("change")
+    pg.wait_for_timeout(1000)
+    check("an empty torque removes the torques key", "torques" not in get_project(pid)["spec"]["anchors"][i])
+    # an old (0.4.0) project without torques must open and save without a torques key
+    req = urllib.request.Request(base + "/api/projects", data=stl, method="POST",
+                                 headers={"X-Filename": "old.stl", "Content-Type": "application/octet-stream"})
+    old = json.load(urllib.request.urlopen(req))
+    oid = old.get("id") or old.get("project", {}).get("id")
+    ex = json.load(open(os.path.join(root, "examples", "bracket.json")))
+    ospec = {k: ex[k] for k in ("anchors", "loadCases", "material", "resolution", "designSpace")}
+    ospec.update(name=oid, model=old["model"], keepOut=[], keep=[],
+                 objective={"minimise": "mass", "volumeFraction": 0.35, "combine": "worst"},
+                 limits={"maxDisplacementMM": 0.3, "minSafetyFactor": 2},
+                 output={"formats": ["stl"], "smoothing": 10, "upsample": 2})
+    ogui = {"anchors": [{} if a["role"] == "fixed" else
+                        {"forces": {"down": {"mag": 2000, "dir": "-z"}, "side": {"mag": 600, "dir": "+y"}}}
+                        for a in ex["anchors"]], "keepOut": [], "keep": []}
+    req = urllib.request.Request(f"{base}/api/projects/{oid}/save", method="POST",
+                                 data=json.dumps({"spec": ospec, "gui": ogui}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    urllib.request.urlopen(req)
+    open_in_page(pg, oid, step=1)
+    pg.wait_for_timeout(800)
+    sp = get_project(oid)
+    check("old project opens and saves without torques",
+          not any("torques" in a for a in sp["spec"]["anchors"]) and "maxRotationDeg" not in sp["spec"]["limits"]
+          and not any("torques" in m for m in sp["gui"]["anchors"]),
+          json.dumps([sorted(a) for a in sp["spec"]["anchors"]]))
+    check("old project keeps its anchors", sp["spec"]["anchors"] == ospec["anchors"])
+
+
 try:
     for _ in range(60):
         try:
@@ -122,6 +196,7 @@ try:
               and spec.get("impact") == {"impact": {"anchor": "load-bore", "massKg": 0.5, "dropHeightMM": 1000,
                                                     "direction": [0, 0, -1]}},
               json.dumps({k: spec.get(k) for k in ("physics", "impact", "limits")}))
+        torque_checks(pg, pid, stl)
         pg.click("#navLibrary")
         pg.wait_for_timeout(1200)
         txt = pg.content()

@@ -130,6 +130,7 @@ function sync() {
   sp.anchors.forEach((a, i) => {
     const m = g.anchors[i] || {};
     delete a.pressure; delete a.areaMM2; delete a.normal;
+    syncTorques(a, m);
     if (a.role === "load") {
       a.loads = {};
       const area = outlineArea(m);
@@ -147,9 +148,52 @@ function sync() {
   else delete sp.gravity;
   sp.keepOut = g.keepOut.map(m => derived(m, "keepOut"));
   sp.keep = g.keep.map(m => derived(m, "keep"));
-  const used = new Set(sp.anchors.flatMap(a => [...Object.keys(a.loads || {}), ...Object.keys(a.pressure || {})]));
+  const used = new Set(sp.anchors.flatMap(a => [...Object.keys(a.loads || {}), ...Object.keys(a.pressure || {}), ...Object.keys(a.torques || {})]));
   if (used.size) for (const c of Object.keys(sp.loadCases)) if (!used.has(c)) delete sp.loadCases[c];
   syncImpact();
+}
+// Torque (a pure moment, N·m) per load case on a load anchor. GUI state: meta.torques = {case: [Mx, My, Mz]}.
+// The spec gets "torques" only for cases with a non-zero torque; no torque gives no key (old projects stay the same).
+function torqueVec(meta, c) {
+  const t = ((meta && meta.torques) || {})[c] || [];
+  return [0, 1, 2].map(k => +t[k] || 0);
+}
+function syncTorques(a, m) {
+  if (a.role !== "load") { delete a.torques; return; }
+  if (m.torques === undefined && a.torques && typeof a.torques === "object") m.torques = clone(a.torques);   // a typed spec
+  const t = {};
+  for (const c of cases()) { const v = torqueVec(m, c); if (v.some(x => x !== 0)) t[c] = v; }
+  if (Object.keys(t).length) a.torques = t; else delete a.torques;
+}
+function torqueRows(a, i, m) {
+  if (a.role !== "load") return "";
+  return `<div class="help">Torque in N·m per load case, about the X, Y and Z axes (right-hand rule). Leave empty for no torque.</div>` +
+    cases().map(c => {
+      const t = ((m.torques || {})[c]) || [];
+      return `<div class="force torque" data-torque-row="${i}" data-case="${esc(c)}"><span class="cn">${esc(c)}</span>
+        <span class="xyz">${[0, 1, 2].map(k => `<input type="number" step="any" data-bind="gui:anchors.${i}.torques.${c}.${k}"
+          data-torque="${i}.${esc(c)}.${k}" value="${t[k] ?? ""}" placeholder="0" title="M${"xyz"[k]}, N·m" aria-label="Torque M${"xyz"[k]} in N·m">`).join("")}</span>
+        <span class="quiet">N·m</span></div>`;
+    }).join("");
+}
+function twistRows(o, lim) {
+  // Twist of each load region, in degrees. Shown only when the run has it (0.4.1 back end).
+  // Reads o.twistDeg = {anchor: {case: deg}} or o.cases[case].twistDeg = {anchor: deg}.
+  const rows = [];
+  if (o && o.twistDeg && typeof o.twistDeg === "object") {
+    for (const [an, per] of Object.entries(o.twistDeg)) {
+      if (per && typeof per === "object") for (const [c, d] of Object.entries(per)) rows.push([an, c, d]);
+      else rows.push([an, "", per]);
+    }
+  } else {
+    for (const [c, r] of Object.entries((o && o.cases) || {}))
+      if (r && r.twistDeg && typeof r.twistDeg === "object") for (const [an, d] of Object.entries(r.twistDeg)) rows.push([an, c, d]);
+  }
+  if (!rows.length) return "";
+  const n = v => (typeof v === "number" ? v : (v && typeof v === "object" ? v.deg ?? v.value : NaN));
+  return `<details class="log" id="twistBlock"><summary>Twist of load regions</summary><table class="kv">
+    ${rows.map(([an, c, d]) => `<tr data-twist="${esc(an)}"><td>${esc(an)}${c ? `, case ${esc(c)}` : ""}</td><td>${fmt(n(d), 4)}°</td></tr>`).join("")}
+    ${lim && lim.maxRotationDeg ? `<tr><td>Limit</td><td>${fmt(lim.maxRotationDeg)}°</td></tr>` : ""}</table></details>`;
 }
 const AXIS = { "+x": [1, 0, 0], "-x": [-1, 0, 0], "+y": [0, 1, 0], "-y": [0, -1, 0], "+z": [0, 0, 1], "-z": [0, 0, -1] };
 function impactGui() {
@@ -498,6 +542,8 @@ const BODY = {
       <fieldset><legend>Limits</legend>
         ${row("Maximum displacement, mm", num("limits.maxDisplacementMM", sp.limits.maxDisplacementMM, `min="0" step="any" ${mass ? "required" : ""}`),
           mass ? "Needed for the lightest-part goal." : "Leave empty for no limit.")}
+        ${row("Maximum twist of a load region, degrees", num("limits.maxRotationDeg", sp.limits.maxRotationDeg, 'min="0" step="any"'),
+          "Anneal reports and checks the twist. The optimizer does not use this limit. Leave empty for no limit.")}
         ${row("Minimum safety factor on yield", num("limits.minSafetyFactor", sp.limits.minSafetyFactor, 'min="0" step="0.1"'))}
         ${chk("physics.buckling", !!(sp.physics || {}).buckling, "Check buckling of the finished part",
           "Linear buckling, corrected for the voxel model. Adds about a minute or more per load case.")}
@@ -619,6 +665,7 @@ const BODY = {
       <div class="btns">${files.map(f => `<a class="btn" href="${base}${encodeURIComponent(f)}?download=1">Download ${f.split(".").pop().toUpperCase()}</a>`).join("")}
         ${r.files.includes("report.html") ? `<a class="btn" href="${base}report.html" target="_blank" rel="noopener">Open report</a>` : ""}
         <button class="btn" data-reveal="${esc(r.dir)}">Open folder</button></div>
+      ${twistRows(o, lim)}
       ${feaBlock(o.fea, o.massProperties)}
       ${advancedBlock(rec.advanced, base, r.files)}
       <fieldset><legend>Notes</legend>
@@ -687,6 +734,7 @@ function anchorRow(a, i) {
     <div class="what">${R.noun}: ${esc(m.label || "Region")}</div>
     ${a.role === "fixed" ? `<div class="row"><span>Held in</span><span class="dofs">${"xyz".split("").map(d => `<label><input type="checkbox" data-dof="${i}" value="${d}" ${dofs.includes(d) ? "checked" : ""}> ${d.toUpperCase()}</label>`).join("")}</span></div>` : ""}
     ${a.role === "load" ? `<div class="help">Force in newtons per load case${face ? ", or a pressure in MPa on the picked face" : ""}</div>${forces}` : ""}
+    ${torqueRows(a, i, m)}
     <div class="row"><span>Keep material around, mm</span>${num(`anchors.${i}.freezeMM`, a.freezeMM, 'min="0" step="0.5" placeholder="auto"')}</div>
     ${a.hole ? `<div class="row"><span>Room for the bolt head or nut at each end, mm</span>${num(`anchors.${i}.boltAccessMM`, a.boltAccessMM, 'min="0" step="1" placeholder="0"')}</div>` : ""}
     <details class="log"><summary>Region as numbers</summary><textarea data-region="anchors.${i}">${esc(JSON.stringify(a.region, null, 1))}</textarea></details>
@@ -827,6 +875,7 @@ function wire() {
     if (d.caseDel) {
       delete S.spec.loadCases[d.caseDel];
       S.gui.anchors.forEach(m => { if (m.forces) delete m.forces[d.caseDel]; });
+      S.gui.anchors.forEach(m => { if (m.torques) delete m.torques[d.caseDel]; });
       if (S.view.case === d.caseDel) S.view.case = null;
       save(); return render();
     }
@@ -900,6 +949,7 @@ function wire() {
       if (!nu || nu === old || S.spec.loadCases[nu]) { el.value = old; return; }
       S.spec.loadCases[nu] = S.spec.loadCases[old]; delete S.spec.loadCases[old];
       S.gui.anchors.forEach(m => { if (m.forces && m.forces[old]) { m.forces[nu] = m.forces[old]; delete m.forces[old]; } });
+      S.gui.anchors.forEach(m => { if (m.torques && m.torques[old]) { m.torques[nu] = m.torques[old]; delete m.torques[old]; } });
       if (S.view.case === old) S.view.case = nu;
       save(); return render();
     }
@@ -1090,6 +1140,8 @@ async function refreshView() {
       const v = vecFor(m, caseNow);
       const c = m.centre || regionCentre(a.region);
       if (c) viewer.arrow(c, v, `${fmt(Math.hypot(...v))} N`);
+      const tq = torqueVec(m, caseNow);
+      if (c && tq.some(x => x) && viewer.torque) viewer.torque(c, tq, `${fmt(Math.hypot(...tq))} N·m`);
     }
   });
   if (which === "model") for (const k of ["keepOut", "keep"]) (S.spec[k] || []).forEach(r => viewer.region(r, ROLE[k].css));
