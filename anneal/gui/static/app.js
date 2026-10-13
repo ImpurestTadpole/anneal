@@ -151,6 +151,7 @@ function sync() {
   const used = new Set(sp.anchors.flatMap(a => [...Object.keys(a.loads || {}), ...Object.keys(a.pressure || {}), ...Object.keys(a.torques || {})]));
   if (used.size) for (const c of Object.keys(sp.loadCases)) if (!used.has(c)) delete sp.loadCases[c];
   syncImpact();
+  syncThermal();
 }
 // Torque (a pure moment, N·m) per load case on a load anchor. GUI state: meta.torques = {case: [Mx, My, Mz]}.
 // The spec gets "torques" only for cases with a non-zero torque; no torque gives no key (old projects stay the same).
@@ -239,6 +240,92 @@ function impactFields() {
     ${row(m.mode === "height" ? "Drop height, mm" : "Impact speed, m/s", num("gui:impact.value", m.value, 'min="0" step="any"'))}
     ${row("Direction the mass moves", `<select data-bind="gui:impact.dir" data-kind="text">${DIRS.filter(([v]) => AXIS[v]).map(([v, t]) => `<option value="${v}" ${m.dir === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
     ${row("Minimum safety factor in the impact", num("limits.minImpactSafetyFactor", S.spec.limits.minImpactSafetyFactor, 'min="0" step="0.1" placeholder="1"'))}`;
+}
+// Temperature (0.4.2). GUI state: S.gui.thermal = {ref, cases: {case: tempC}, only: [thermal-only case names]}.
+// The spec gets "thermal" only when at least one case has a temperature; old projects stay the same.
+function thermalGui(create = false) {
+  let t = S.gui.thermal;
+  if (!t || !t.cases) {
+    const th = S.spec.thermal || {};
+    const cs = { ...(th.cases || {}) };
+    t = { ref: t && t.ref !== undefined ? t.ref : th.referenceTempC, cases: cs, only: Object.keys(cs).filter(c => !(S.spec.loadCases || {})[c]) };
+    if (create || S.spec.thermal || S.gui.thermal) S.gui.thermal = t;
+  }
+  t.only ??= [];
+  return t;
+}
+const tempOf = v => (v === "" || v === null || v === undefined || !Number.isFinite(+v)) ? null : +v;
+function syncThermal() {
+  const lim = S.spec.limits || {};
+  if (lim.displacementIncludesThermal !== true) delete lim.displacementIncludesThermal;
+  if (!S.gui.thermal && !S.spec.thermal) return;
+  const t = thermalGui(true), out = {};
+  for (const c of [...cases(), ...t.only]) { const v = tempOf(t.cases[c]); if (v !== null) out[c] = v; }
+  if (!Object.keys(out).length) { delete S.spec.thermal; return; }
+  S.spec.thermal = { referenceTempC: tempOf(t.ref) ?? 20, cases: out };
+}
+function alphaIn(v) {
+  // Expansion coefficient typed in 1/K ("2.3e-5") or ppm/K ("23", "23 ppm/K"). Values of 0.001 and more are ppm/K:
+  // no solid has alpha that high in 1/K, and no solid has alpha that low in ppm/K.
+  const s = String(v ?? "").trim();
+  if (!s) return undefined;
+  const x = parseFloat(s.replace(",", "."));
+  if (!Number.isFinite(x)) return NaN;
+  return /ppm|µ|um/i.test(s) || x >= 1e-3 ? +(x * 1e-6).toPrecision(12) : x;
+}
+const ppm = a => a ? `${fmt(a * 1e6, 4)} ppm/K` : "";
+function matThermalRows(m) {
+  // Custom material: expansion and service limit. Alpha is stored in 1/K; the field also takes ppm/K.
+  const a = (k, label) => row(label, `<input type="text" inputmode="decimal" data-mat-alpha="${k}" value="${m[k] ?? ""}" placeholder="${k === "alphaZ" ? "= alpha" : "none"}">`,
+    m[k] ? `= ${ppm(m[k])}. Type 1/K (2.3e-5) or ppm/K (23).` : "Type 1/K (2.3e-5) or ppm/K (23). Use a datasheet or a test value.");
+  return `${a("alpha", "Thermal expansion alpha, 1/K")}
+    ${a("alphaZ", "Thermal expansion across the layers (alphaZ), 1/K")}
+    ${row("Maximum service temperature, °C", num("material.maxServiceTempC", m.maxServiceTempC, 'step="any" placeholder="none" data-rerender'), "Above this temperature the run stops.")}
+    ${row("Derating table", `<input type="text" data-mat-derating value="${esc(m.tempDerating ? JSON.stringify(m.tempDerating) : "")}" placeholder="[[20, 1, 1], [60, 0.8, 0.7]]">`,
+      "Rows of [°C, E factor, yield factor], sorted by temperature, with factors 1 at the reference temperature. Leave empty for no derating.")}`;
+}
+function temperatureFields() {
+  const t = thermalGui(), m = matNow(), lim = S.spec.limits || {};
+  const ref = tempOf(t.ref) ?? 20;
+  const tin = (c, only) => `<div class="row" data-temp-row="${esc(c)}"${only ? " data-thermal-only" : ""}>
+      ${only ? `<span style="display:flex;align-items:center;gap:4px"><input type="text" value="${esc(c)}" data-temp-rename="${esc(c)}" aria-label="Thermal-only case name">
+        <button class="icon" data-temp-del="${esc(c)}" title="Remove thermal-only case">✕</button></span>`
+        : `<span>Case ${esc(c)}, °C</span>`}
+      <input type="number" step="any" data-temp-case="${esc(c)}" value="${t.cases[c] ?? ""}" placeholder="${fmt(ref)}" aria-label="Temperature of case ${esc(c)} in °C"></div>`;
+  const hot = Object.entries(S.spec.thermal?.cases || {});
+  const warn = [];
+  if (hot.length && !m.alpha) warn.push(`The material has no expansion coefficient (alpha). Add alpha (1/K) to the material, or the run stops.`);
+  if (m.maxServiceTempC !== undefined) for (const [c, v] of hot) if (v > m.maxServiceTempC)
+    warn.push(`Case ${c} is at ${fmt(v)} °C. The material limit is ${fmt(m.maxServiceTempC)} °C. Choose a material with a higher service temperature.`);
+  return `<fieldset id="tempFields"><legend>Temperature</legend>
+    <p class="help">One uniform part temperature per load case. Leave a case empty to run it at the reference temperature.
+      Supports do not expand. The optimizer uses the mechanical loads only; the run checks the thermal stress on the result.</p>
+    ${row("Reference temperature (no thermal stress), °C", `<input type="number" step="any" id="tempRef" data-bind="gui:thermal.ref" value="${t.ref ?? ""}" placeholder="20">`)}
+    ${cases().map(c => tin(c, false)).join("")}
+    ${t.only.map(c => tin(c, true)).join("")}
+    <div class="btns"><button class="btn" id="tempAddOnly" data-temp-add>Add a thermal-only case</button></div>
+    <p class="help">A thermal-only case has no mechanical load: the part only expands or shrinks.</p>
+    ${chk("limits.displacementIncludesThermal", lim.displacementIncludesThermal === true, "The displacement limit includes the thermal displacement",
+      "Off (default): the limit checks the mechanical displacement only. A free part that expands is not too flexible.", 'id="dispInclThermal"')}
+    ${warn.map(w => `<p class="err">${esc(w)}</p>`).join("")}
+  </fieldset>`;
+}
+function thermalRows(o, rs) {
+  // Result step: case temperature, mechanical and thermal displacement per case. Shown only when the run has a
+  // temperature. Reads o.cases[case].mechanicalDisplacementMM and .thermalDisplacementMM (0.4.2 back end).
+  const th = (rs && rs.thermal) || null, cs = (o && o.cases) || {};
+  const has = c => cs[c] && (cs[c].thermalDisplacementMM !== undefined || cs[c].mechanicalDisplacementMM !== undefined);
+  if (!th && !Object.keys(cs).some(has)) return "";
+  const ref = th ? th.referenceTempC ?? 20 : null, tc = (th && th.cases) || {};
+  const names = [...new Set([...Object.keys(cs), ...Object.keys(tc)])];
+  const incl = (rs.limits || {}).displacementIncludesThermal === true;
+  return `<details class="log" id="thermalBlock" open><summary>Temperature and displacement</summary>
+    <p class="help">Reference ${ref === null ? "–" : fmt(ref)} °C. The displacement limit checks the ${incl ? "total (mechanical and thermal)" : "mechanical"} displacement.</p>
+    <table class="kv"><tr><th>Case</th><th>°C (ΔT)</th><th>Mechanical, mm</th><th>Thermal, mm</th></tr>
+    ${names.map(c => { const r = cs[c] || {}, T = tc[c];
+      return `<tr data-thermal-case="${esc(c)}"><td>${esc(c)}</td><td>${T === undefined ? (ref === null ? "–" : fmt(ref)) : `${fmt(T)} (${T - ref >= 0 ? "+" : ""}${fmt(T - ref)})`}</td>
+        <td>${fmt(r.mechanicalDisplacementMM ?? (T === undefined ? r.maxDisplacementMM : undefined), 4)}</td><td>${fmt(r.thermalDisplacementMM ?? (T === undefined ? 0 : undefined), 4)}</td></tr>`; }).join("")}
+    </table></details>`;
 }
 let saveTimer = null;
 function save(now = false) {
@@ -522,8 +609,9 @@ const BODY = {
         ${row("E across the layers (Ez), MPa", num("material.Ez", m.Ez, 'min="1" step="any" placeholder="none"'), "For print-aware runs. From a test or the Z-direction value on the data sheet.")}
         ${row("Poisson's ratio across layers (nuZ)", num("material.nuZ", m.nuZ, 'min="0" max="0.49" step="0.01" placeholder="= nu"'))}
         ${row("Shear modulus between layers (Gz), MPa", num("material.Gz", m.Gz, 'min="1" step="any" placeholder="from Ez"'))}
+        ${matThermalRows(m)}
         <div class="row"><input type="text" id="saveMatName" placeholder="Name for your library"><button class="btn" data-save-mat>Save to my library</button></div>`
-        : `<p class="help">E ${fmt(m.E)} MPa, yield ${fmt(m.yield)} MPa, ${m.density} g/cm³, min wall ${m.minWallMM ?? 1} mm${m.zStrengthFactor ? `, layer strength ×${m.zStrengthFactor}` : ""}.
+        : `<p class="help">E ${fmt(m.E)} MPa, yield ${fmt(m.yield)} MPa, ${m.density} g/cm³, min wall ${m.minWallMM ?? 1} mm${m.zStrengthFactor ? `, layer strength ×${m.zStrengthFactor}` : ""}${m.alpha ? `, α ${ppm(m.alpha)}` : ""}${m.maxServiceTempC !== undefined ? `, max ${fmt(m.maxServiceTempC)} °C` : ""}.
             ${esc(m.note || "")}${m.builtIn ? "" : ` <span class="tag mine">My library${m.source ? ": " + esc(m.source) : ""}</span>`}
             <button class="link" data-go="library">Library</button></p>`}
       ${processFields()}
@@ -551,7 +639,8 @@ const BODY = {
         ${chk("physics.nonlinear", !!(sp.physics || {}).nonlinear, "Check large deformation with CalculiX",
           "Optional. Needs CalculiX and gmsh installed. Compares linear and large-deflection results of the finished part.")}
         ${impactFields()}
-      </fieldset>`;
+      </fieldset>
+      ${temperatureFields()}`;
   },
 
   settings() {
@@ -666,6 +755,7 @@ const BODY = {
         ${r.files.includes("report.html") ? `<a class="btn" href="${base}report.html" target="_blank" rel="noopener">Open report</a>` : ""}
         <button class="btn" data-reveal="${esc(r.dir)}">Open folder</button></div>
       ${twistRows(o, lim)}
+      ${thermalRows(o, r.spec || {})}
       ${feaBlock(o.fea, o.massProperties)}
       ${advancedBlock(rec.advanced, base, r.files)}
       <fieldset><legend>Notes</legend>
@@ -876,9 +966,16 @@ function wire() {
       delete S.spec.loadCases[d.caseDel];
       S.gui.anchors.forEach(m => { if (m.forces) delete m.forces[d.caseDel]; });
       S.gui.anchors.forEach(m => { if (m.torques) delete m.torques[d.caseDel]; });
+      if (S.gui.thermal || S.spec.thermal) delete thermalGui(true).cases[d.caseDel];
       if (S.view.case === d.caseDel) S.view.case = null;
       save(); return render();
     }
+    if (d.tempAdd !== undefined) {
+      const t = thermalGui(true); let k = 1, n = "thermal-1";
+      while (S.spec.loadCases[n] || t.only.includes(n)) n = `thermal-${++k}`;
+      t.only.push(n); save(); return render();
+    }
+    if (d.tempDel) { const t = thermalGui(true); t.only = t.only.filter(c => c !== d.tempDel); delete t.cases[d.tempDel]; save(); return render(); }
     if (d.job) return startJob(d.job);
     if (d.stop !== undefined && S.job) { await post(`/api/jobs/${S.job.id}/cancel`, {}); toast("Stopping after this iteration…"); return; }
     if (d.reveal) return post("/api/reveal", { path: d.reveal }).catch(e => toast(e.message));
@@ -946,12 +1043,37 @@ function wire() {
     }
     if (el.dataset.caseRename) {
       const old = el.dataset.caseRename, nu = el.value.trim().replace(/[^\w.-]/g, "-");
-      if (!nu || nu === old || S.spec.loadCases[nu]) { el.value = old; return; }
+      if (!nu || nu === old || S.spec.loadCases[nu] || (S.gui.thermal?.only || []).includes(nu)) { el.value = old; return; }
       S.spec.loadCases[nu] = S.spec.loadCases[old]; delete S.spec.loadCases[old];
       S.gui.anchors.forEach(m => { if (m.forces && m.forces[old]) { m.forces[nu] = m.forces[old]; delete m.forces[old]; } });
       S.gui.anchors.forEach(m => { if (m.torques && m.torques[old]) { m.torques[nu] = m.torques[old]; delete m.torques[old]; } });
+      if (S.gui.thermal || S.spec.thermal) { const t = thermalGui(true); if (t.cases[old] !== undefined) { t.cases[nu] = t.cases[old]; delete t.cases[old]; } }
       if (S.view.case === old) S.view.case = nu;
       save(); return render();
+    }
+    if (el.dataset.tempCase !== undefined) {
+      const t = thermalGui(true), v = tempOf(el.value);
+      if (v === null) delete t.cases[el.dataset.tempCase]; else t.cases[el.dataset.tempCase] = v;
+      save(); return render();
+    }
+    if (el.dataset.tempRename) {
+      const t = thermalGui(true), old = el.dataset.tempRename, nu = el.value.trim().replace(/[^\w.-]/g, "-");
+      if (!nu || nu === old || S.spec.loadCases[nu] || t.only.includes(nu)) { el.value = old; return; }
+      t.only = t.only.map(c => c === old ? nu : c);
+      if (t.cases[old] !== undefined) { t.cases[nu] = t.cases[old]; delete t.cases[old]; }
+      save(); return render();
+    }
+    if (el.dataset.matAlpha) {
+      const v = alphaIn(el.value);
+      if (Number.isNaN(v)) { toast("Type alpha as a number in 1/K (2.3e-5) or in ppm/K (23)."); return; }
+      setp(S.spec.material, el.dataset.matAlpha, v); save(); return render();
+    }
+    if (el.dataset.matDerating !== undefined) {
+      const s = el.value.trim();
+      if (!s) { delete S.spec.material.tempDerating; save(); return; }
+      try { const v = JSON.parse(s); if (!Array.isArray(v)) throw 0; S.spec.material.tempDerating = v; save(); }
+      catch { toast("Type the derating table as [[°C, E factor, yield factor], ...], for example [[20, 1, 1], [60, 0.8, 0.7]]."); }
+      return;
     }
     if (el.dataset.dof !== undefined) {
       const i = +el.dataset.dof;
@@ -1225,6 +1347,8 @@ const MAT_FIELDS = [["E", "Young's modulus E, MPa", "number"], ["nu", "Poisson's
   ["yield", "Yield strength, MPa", "number"], ["minWallMM", "Minimum wall, mm", "number"], ["zStrengthFactor", "Layer strength factor (0.05 to 1)", "number"],
   ["Ez", "E across the layers (Ez), MPa", "number"], ["nuZ", "Poisson's ratio across layers (nuZ)", "number"],
   ["Gz", "Shear modulus between layers (Gz), MPa", "number"],
+  ["alpha", "Thermal expansion alpha, 1/K (or ppm/K)", "alpha"], ["alphaZ", "Expansion across the layers (alphaZ), 1/K (or ppm/K)", "alpha"],
+  ["maxServiceTempC", "Maximum service temperature, °C", "number"], ["tempDerating", "Derating table [[°C, E factor, yield factor], ...]", "json"],
   ["process", "Process", "process"], ["note", "Note or source", "text"]];
 const PROC_FIELDS = [["minWallMM", "Minimum wall, mm"], ["minHoleMM", "Minimum hole, mm"], ["maxOverhangDeg", "Steepest overhang without support, °"],
   ["zStrengthFactor", "Layer strength factor"], ["layerMM", "Layer height, mm"]];
@@ -1235,10 +1359,11 @@ async function loadLibrary() {
   $("#libPath").textContent = LIB.path;
   const ms = LIB.materials, ps = LIB.processes;
   $("#libMats").innerHTML = `<thead><tr><th>Name</th><th class="num">E, MPa</th><th class="num">Poisson</th><th class="num">Density, g/cm³</th>
-    <th class="num">Yield, MPa</th><th class="num">Min wall, mm</th><th class="num">Layer factor</th><th>Process</th><th>Source</th><th></th><th></th></tr></thead><tbody>
+    <th class="num">Yield, MPa</th><th class="num">Min wall, mm</th><th class="num">Layer factor</th><th class="num">α, ppm/K</th><th class="num">Max, °C</th><th>Process</th><th>Source</th><th></th><th></th></tr></thead><tbody>
     ${Object.entries(ms).map(([k, m]) => `<tr><td><b>${esc(k)}</b></td><td class="num">${fmt(m.E)}</td><td class="num">${fmt(m.nu)}</td>
       <td class="num">${fmt(m.density)}</td><td class="num">${fmt(m.yield)}</td><td class="num">${fmt(m.minWallMM ?? 1)}</td>
-      <td class="num">${m.zStrengthFactor ? fmt(m.zStrengthFactor) : "–"}</td><td>${esc(m.process || "–")}</td>
+      <td class="num">${m.zStrengthFactor ? fmt(m.zStrengthFactor) : "–"}</td>
+      <td class="num" data-lib-alpha="${esc(k)}">${m.alpha ? fmt(m.alpha * 1e6, 4) : "–"}</td><td class="num">${m.maxServiceTempC !== undefined ? fmt(m.maxServiceTempC) : "–"}</td><td>${esc(m.process || "–")}</td>
       <td class="note" title="${esc(m.note || "")}">${esc(m.source || m.note || "")}</td>
       <td><span class="tag ${m.builtIn ? "" : "mine"}">${m.builtIn ? "Built in" : "Mine"}</span></td>
       <td class="acts">${m.builtIn ? `<button class="btn" data-lib-copy="${esc(k)}" data-lib-kind="material">Copy to edit</button>`
@@ -1265,7 +1390,8 @@ function libEditor(kind, name, copy) {
   const nm = name ? (copy ? `${name} (mine)` : name) : "";
   const procOpts = v => `<select data-f="process"><option value="">None</option>${Object.keys(LIB.processes).map(k => `<option ${v === k ? "selected" : ""}>${esc(k)}</option>`).join("")}</select>`;
   const fields = isMat ? MAT_FIELDS.map(([k, t, ty]) => `<label class="row"><span>${t}</span>${ty === "process" ? procOpts(src.process)
-      : `<input type="${ty === "number" ? "number" : "text"}" step="any" data-f="${k}" value="${esc(src[k] ?? "")}">`}</label>`).join("")
+      : `<input type="${ty === "number" ? "number" : "text"}" step="any" data-f="${k}" ${ty === "alpha" || ty === "json" ? `data-f-kind="${ty}"` : ""}
+          value="${esc(ty === "json" && src[k] ? JSON.stringify(src[k]) : src[k] ?? "")}">`}</label>`).join("")
     : PROC_FIELDS.map(([k, t]) => `<label class="row"><span>${t}</span><input type="number" step="any" data-f="${k}" value="${src[k] ?? ""}"></label>`).join("") + `
       <label class="row"><span>Supports allowed</span><select data-f="supportsAllowed"><option value="true" ${src.supportsAllowed !== false ? "selected" : ""}>Yes</option><option value="false" ${src.supportsAllowed === false ? "selected" : ""}>No</option></select></label>
       <label class="row"><span>Closed cavities</span><select data-f="enclosedVoids">${["allow", "warn", "fail"].map(v => `<option ${src.enclosedVoids === v ? "selected" : ""}>${v}</option>`).join("")}</select></label>
@@ -1288,6 +1414,16 @@ async function libSave(kind) {
   const values = {};
   box.querySelectorAll("[data-f]").forEach(el => { if (el.dataset.f !== "name" && el.value !== "") values[el.dataset.f] = el.value; });
   try {
+    box.querySelectorAll("[data-f-kind]").forEach(el => {
+      const k = el.dataset.f;
+      if (values[k] === undefined) return;
+      if (el.dataset.fKind === "alpha") {
+        values[k] = alphaIn(values[k]);
+        if (Number.isNaN(values[k])) throw new Error(`${k}: type a number in 1/K (2.3e-5) or in ppm/K (23).`);
+      } else {
+        try { values[k] = JSON.parse(values[k]); } catch { throw new Error(`${k}: type the table as [[20, 1, 1], [60, 0.8, 0.7]].`); }
+      }
+    });
     if (kind === "material") {
       await post("/api/library/materials", { name, values, rename_from: box.dataset.orig || null });
     } else {

@@ -40,6 +40,24 @@ ITER_RE = re.compile(r"^\s*it\s+(\d+)\s+p\s+([\d.]+)\s+b\s+([\d.]+)\s+obj\s+([\d
 PASS_RE = re.compile(r"Optimizing at volume fraction ([\d.]+)")
 
 
+def _write_json(path, obj, **kw):
+    """Write JSON to a temporary file, then replace the old file. A reader never sees a half-written file
+    (the app saves while it reads the project). Windows can refuse the replace while a reader has the file
+    open; then try again, and at the end write in place."""
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, **kw)
+    for _ in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            time.sleep(0.05)
+    os.remove(tmp)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, **kw)
+
+
 class Cancelled(Exception):
     pass
 
@@ -197,11 +215,9 @@ class App:
         spec = body.get("spec")
         if spec is not None:
             spec["name"] = pid
-            with open(os.path.join(d, f"{pid}.anneal.json"), "w", encoding="utf-8") as fh:
-                json.dump(spec, fh, indent=2)
+            _write_json(os.path.join(d, f"{pid}.anneal.json"), spec, indent=2)
         if body.get("gui") is not None:
-            with open(os.path.join(d, "gui.json"), "w", encoding="utf-8") as fh:
-                json.dump(body["gui"], fh)
+            _write_json(os.path.join(d, "gui.json"), body["gui"])
         return {"saved": True}
 
     def pick(self, pid, body):
