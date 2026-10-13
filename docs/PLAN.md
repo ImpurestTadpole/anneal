@@ -267,6 +267,11 @@ The same proof as 0.4.0 (`CLAUDE.md`, "Proof"), with these changes:
 `docs/research/thermal-loads.md` (read that file first: physics, traps and sources). 0.4.2 starts
 only after 0.4.1 is on master and tagged. Branch `release-0.4.2` from tag `v0.4.1`.
 
+**Owner decision (13 October 2026):** start 0.4.2 now. `release-0.4.2` was branched from
+`release-0.4.1` (6778e5d) before `v0.4.0` and `v0.4.1` exist. Merge `release-0.4.1` into
+`release-0.4.2` as 0.4.1 changes. The 0.4.2 regression baseline is the 0.4.1 code at its tag. The
+proof and the tag order (v0.4.0, then v0.4.1, then v0.4.2) do not change.
+
 ### Scope
 
 In scope:
