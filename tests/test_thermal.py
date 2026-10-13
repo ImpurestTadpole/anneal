@@ -402,6 +402,21 @@ def test_advanced_statements_and_derated_material_comparison(hot_run):
     assert "no alpha" in html
 
 
+def test_calculix_cards_for_temperature():
+    from anneal.sidecar import _thermal_material_cards, _material_cards, thermal_step_cards
+    p = _prob(thermal={"referenceTempC": 23, "cases": {"main": 70, "cold": -20}})
+    p.D = None
+    cards, orient = _thermal_material_cards(p)
+    assert cards[:2] == ["*MATERIAL,NAME=M", "*ELASTIC"] and orient == ""
+    assert "35000.0,0.3,120.0" in cards                          # E x derating at each table temperature
+    assert cards[-2:] == ["*EXPANSION,ZERO=23.0", "2e-05"]
+    assert thermal_step_cards(p, "main") == ["*TEMPERATURE", "NALL,70.0"]
+    assert thermal_step_cards(p, "unknown") == []
+    q = _prob()
+    q.D = None
+    assert _material_cards(q)[0] == ["*MATERIAL,NAME=M", "*ELASTIC", "70000.0,0.3"]   # unchanged without thermal
+
+
 # ------------------------------------------------------------------ H7: buckling with thermal pre-stress
 @pytest.mark.parametrize("element", ["e9", "hex8fi"])
 def test_heated_column_held_at_both_ends_buckles_at_the_euler_temperature(element):

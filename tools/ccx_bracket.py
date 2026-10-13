@@ -51,7 +51,7 @@ ids = np.array(used)
 xyz = np.array([nodes[n] for n in used])
 mesh_s = time.time() - t0
 
-from anneal.sidecar import load_weights, _material_cards, find_ccx
+from anneal.sidecar import load_weights, _material_cards, _thermal_material_cards, thermal_step_cards, find_ccx
 CCX = find_ccx()
 prob.build()
 if prob.spec.get("physics", {}).get("anisotropic"):
@@ -70,7 +70,8 @@ for a in prob.anchors:
         loads[a.name] = a.loads
 node_xyz = {int(n): x for n, x in zip(ids, xyz)}
 weights = {n: load_weights(elems, node_xyz, sets[n]) for n in loads}
-mat_cards, orient = _material_cards(prob)
+THERMAL = bool(prob.t_case)
+mat_cards, orient = _thermal_material_cards(prob) if THERMAL else _material_cards(prob)
 
 
 def deck(name, step):
@@ -81,6 +82,8 @@ def deck(name, step):
         L += [f"*NSET,NSET={s.upper().replace('-', '_')}"] + [",".join(map(str, v[i:i + 12])) for i in range(0, len(v), 12)]
     L += mat_cards + [f"*SOLID SECTION,ELSET=EALL,MATERIAL=M{orient}", "*BOUNDARY"]
     L += [f"{a.name.upper().replace('-', '_')},{d + 1},{d + 1}" for a in prob.anchors if a.role == "fixed" for d in a.dofs]
+    if THERMAL:
+        L += ["*INITIAL CONDITIONS,TYPE=TEMPERATURE", f"NALL,{prob.t_ref}"]
     L += step
     open(os.path.join(wd, f"{name}.inp"), "w").write("\n".join(L) + "\n")
     t = time.time()
@@ -97,14 +100,36 @@ def cload(case):
                 for d in range(3):
                     if v[d]:
                         out.append(f"{n},{d + 1},{v[d] * wn:.9g}")
+    if THERMAL:
+        out = (out if len(out) > 1 else []) + thermal_step_cards(prob, case)
     return out
+
+
+def peak_stress(dat):
+    """99.5th percentile von Mises (MPa) over integration points of elements whose centroid is more than
+    1.5 voxels from every anchor region (Anneal's design stress also leaves out the anchor zones)."""
+    txt = open(dat).read()
+    if "stresses" not in txt:
+        return float("nan")
+    rows = [l.split() for l in txt.split("stresses")[-1].splitlines() if re.match(r"^\s+\d+\s+\d+\s", l)]
+    S = np.array([[float(v) for v in r[2:8]] for r in rows])
+    el = np.array([int(r[0]) for r in rows])
+    cen = {e[0]: np.mean([node_xyz[n] for n in e[1:5]], axis=0) for e in elems}
+    C = np.array([cen[e] for e in el])
+    far = np.ones(len(el), bool)
+    for a in prob.anchors:
+        far &= a.region.sdf(C) > 1.5 * prob.grid.h
+    sx, sy, sz, txy, txz, tyz = S.T
+    vm = np.sqrt(0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2) + 3 * (txy ** 2 + txz ** 2 + tyz ** 2))
+    return float(np.percentile(vm[far], 99.5)) if far.any() else float("nan")
 
 
 res = {"mesh": {"elements": len(elems), "nodes": int(ids.size), "sizeMM": size, "seconds": mesh_s},
        "anchorNodes": {k: int(v.size) for k, v in sets.items()}, "cases": {}}
 for case in prob.cases:
-    secs = deck(f"static_{case}", ["*STEP", "*STATIC"] + cload(case) + ["*NODE PRINT,NSET=NALL", "U", "*END STEP"])
-    txt = open(os.path.join(wd, f"static_{case}.dat")).read().split("displacements")[-1]
+    secs = deck(f"static_{case}", ["*STEP", "*STATIC"] + cload(case) + ["*NODE PRINT,NSET=NALL", "U"]
+                + (["*EL PRINT,ELSET=EALL", "S"] if THERMAL else []) + ["*END STEP"])
+    txt = open(os.path.join(wd, f"static_{case}.dat")).read().split("displacements")[-1].split("stresses")[0]
     U = np.array([list(map(float, l.split()[1:4])) for l in txt.splitlines() if re.match(r"^\s+\d+\s", l)])
     umax = float(np.linalg.norm(U, axis=1).max()) if U.size else float("nan")
     secs_b = deck(f"buckle_{case}", ["*STEP", "*BUCKLE", "2"] + cload(case) + ["*END STEP"])
@@ -116,6 +141,16 @@ for case in prob.cases:
                           "anneal_corrected": an / a.get("lockingFactor", 1.0),
                           "ccxBucklingFactors": blf[:2], "anneal_buckling": a.get("buckling", {}).get(case),
                           "secondsStatic": secs, "secondsBuckle": secs_b}
+    if THERMAL:
+        c = a["cases"][case]
+        res["cases"][case].update({
+            "temperatureC": prob.t_case.get(case), "ccxPeakStressMPa": peak_stress(os.path.join(wd, f"static_{case}.dat")),
+            "anneal_peakStressMPa": c["peakStressMPa"],
+            "anneal_totalDisplacementMM": c.get("totalDisplacementMM", c["maxDisplacementMM"]),
+            "anneal_thermalDisplacementMM": c.get("thermalDisplacementMM")})
+        r = res["cases"][case]
+        r["displacementRatio"] = r["anneal_totalDisplacementMM"] / umax if umax else float("nan")
+        r["stressRatio"] = r["anneal_peakStressMPa"] / r["ccxPeakStressMPa"] if r["ccxPeakStressMPa"] else float("nan")
 res["seconds"] = time.time() - t0
 print(json.dumps(res, indent=1))
 json.dump(res, open(os.path.join(wd, "ccx_bracket.json"), "w"), indent=1)

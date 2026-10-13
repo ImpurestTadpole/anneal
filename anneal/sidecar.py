@@ -109,6 +109,38 @@ def _material_cards(prob):
     return cards, ",ORIENTATION=OR1"
 
 
+def _thermal_material_cards(prob):
+    """Material cards for a spec with thermal cases: E (and the engineering constants) as a table over
+    temperature from tempDerating (CalculiX interpolates linearly, as Anneal does), and *EXPANSION with
+    ZERO = the reference temperature, so the thermal strain is alpha (T - Tref). alphaZ (print-aware runs)
+    gives *EXPANSION,TYPE=ORTHO in the *ORIENTATION frame of the engineering constants."""
+    m = prob.material
+    D = getattr(prob, "D", None)
+    rows = m.get("tempDerating") or [[prob.t_ref, 1.0, 1.0]]
+    a = float(m["alpha"])
+    if D is None:
+        cards = ["*MATERIAL,NAME=M", "*ELASTIC"] + [f"{m['E'] * fe},{m['nu']},{t}" for t, fe, _ in rows]
+        cards += [f"*EXPANSION,ZERO={prob.t_ref}", f"{a:.9g}"]
+        return cards, ""
+    info = prob.derived["printAware"]
+    E, Ez, nu, nuZ, Gz = info["E"], info["Ez"], info["nu"], info["nuZ"], info["Gz"]
+    nu13 = nuZ * E / Ez
+    R = frame(info["buildDirection"])
+    cards = ["*MATERIAL,NAME=M", "*ELASTIC,TYPE=ENGINEERING CONSTANTS"]
+    for t, fe, _ in rows:
+        cards += [f"{E * fe},{E * fe},{Ez * fe},{nu},{nu13},{nu13},{E * fe / (2 * (1 + nu))},{Gz * fe},", f"{Gz * fe},{t}"]
+    az = float(m.get("alphaZ", a))
+    cards += [f"*EXPANSION,TYPE=ORTHO,ZERO={prob.t_ref}", f"{a:.9g},{a:.9g},{az:.9g}",
+              "*ORIENTATION,NAME=OR1,SYSTEM=RECTANGULAR", ",".join(f"{v:.9g}" for v in (*R[:, 0], *R[:, 1]))]
+    return cards, ",ORIENTATION=OR1"
+
+
+def thermal_step_cards(prob, case):
+    """*TEMPERATURE for a case at temperature (inside the step); nothing for a case at the reference."""
+    t = getattr(prob, "t_case", {}).get(case)
+    return [] if t is None else ["*TEMPERATURE", f"NALL,{t}"]
+
+
 def _max_disp(dat):
     txt = open(dat).read()
     if "displacements" not in txt:
@@ -166,7 +198,8 @@ def nonlinear_check(prob, stl, wd, log=print, size=None):
         if sel.size == 0:
             return {"skipped": f"no mesh nodes inside anchor '{a.name}'"}
         sets[a.name] = sel
-    mat, orient = _material_cards(prob)
+    thermal = bool(getattr(prob, "t_case", None))
+    mat, orient = _thermal_material_cards(prob) if thermal else _material_cards(prob)
     tag = lambda n: re.sub(r"[^A-Za-z0-9_]", "_", n).upper()[:70]
     base = ["*NODE"] + [f"{n},{x:.9g},{y:.9g},{z:.9g}" for n, (x, y, z) in zip(ids, xyz)]
     base += ["*ELEMENT,TYPE=C3D10,ELSET=EALL"] + [",".join(map(str, e)) for e in elems]
@@ -178,6 +211,8 @@ def nonlinear_check(prob, stl, wd, log=print, size=None):
         if a.role == "fixed":
             dofs = sorted(d + 1 for d in a.dofs)
             base += [f"A_{tag(a.name)},{d},{d}" for d in dofs]
+    if thermal:   # stress-free at the reference temperature (NALL is defined above: ccx 2.21 does not predefine it)
+        base += ["*INITIAL CONDITIONS,TYPE=TEMPERATURE", f"NALL,{prob.t_ref}"]
     node_xyz = {int(n): x for n, x in zip(ids, xyz)}
     weights = {a.name: load_weights(elems, node_xyz, sets[a.name]) for a in prob.anchors if a.role == "load"}
     out = {"meshElements": len(elems), "meshNodes": int(ids.size), "meshSizeMM": size,
@@ -191,6 +226,10 @@ def nonlinear_check(prob, stl, wd, log=print, size=None):
                     for d in range(3):
                         if v[d]:
                             cl.append(f"{n},{d + 1},{v[d] * wn:.9g}")
+        if thermal:
+            if len(cl) == 1:
+                cl = []                                # thermal-only case: no point loads
+            cl += thermal_step_cards(prob, case)
         res = {}
         for kind, step in (("linear", ["*STEP", "*STATIC"]),
                            ("nonlinear", ["*STEP,NLGEOM,INC=200", "*STATIC", "0.1,1.0,1e-5,0.25"])):
