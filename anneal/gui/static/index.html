@@ -41,6 +41,7 @@
       <label class="tool" id="caseTool">Load case <select id="caseSel"></select></label>
       <label class="tool" id="ghostTool"><input type="checkbox" id="ghost"> Original</label>
       <span class="grow"></span>
+      <button class="tool" id="panTool" aria-pressed="false" title="Left drag moves the view instead of turning it. Right drag, Shift + drag and the arrow keys also move it.">Move</button>
       <div class="seg cams" role="group" aria-label="Camera">
         <button data-cam="fit" title="Fit the part in view">Fit</button>
         <button data-cam="iso">Iso</button>
@@ -51,6 +52,7 @@
       </div>
     </div>
     <div class="hint" id="hint" hidden></div>
+    <div class="navhelp" id="navhelp">Drag: turn · Right drag or Shift + drag: move · Wheel: zoom · Double-click: turn around that point</div>
     <div class="legend" id="legend" hidden>
       <div class="lt" id="legendTitle"></div>
       <div class="lbar"></div>

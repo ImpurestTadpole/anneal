@@ -25,7 +25,7 @@ const ROLE = {
   fixed: { cls: "hold", css: "--hold", noun: "Support", verb: "Add support" },
   load: { cls: "push", css: "--push", noun: "Load", verb: "Add load" },
   keepOut: { cls: "void", css: "--void", noun: "Keep empty", verb: "Add keep-out" },
-  keep: { cls: "solid", css: "--solid", noun: "Keep solid", verb: "Add keep-solid" },
+  keep: { cls: "solid", css: "--solid", noun: "Keep as is", verb: "Keep a feature" },
 };
 const DIRS = [["-z", "Down (−Z)"], ["+z", "Up (+Z)"], ["+x", "+X"], ["-x", "−X"], ["+y", "+Y"], ["-y", "−Y"],
   ["into", "Into the surface"], ["out", "Away from the surface"], ["custom", "Custom vector"]];
@@ -76,7 +76,7 @@ function defaultSpec(p) {
     optimizer: { iterations: 70, massPasses: 5, penalty: 3, move: 0.2, sharpness: 4 },
     limits: { maxDisplacementMM: +(diag / 500).toPrecision(2), minSafetyFactor: 2 },
     loadPaths: { guard: true, margin: 0.1, maxDrop: 0.15, repair: true },
-    output: { formats: ["stl", "3mf"], smoothing: 10, upsample: 2, isoLevel: "auto", report: true },
+    output: { formats: ["stl", "3mf"], smoothing: 10, upsample: 2, isoLevel: "auto", report: true, exactFeatures: true },
   };
 }
 function cases() { return Object.keys(S.spec.loadCases || { main: {} }); }
@@ -101,6 +101,12 @@ function derived(meta, role) {
       return { type: "cylinder", from: V(r.from, ax, -ext), to: V(r.to, ax, ext), r: +(R + +(p.clear ?? 0.5)).toFixed(3) };
     }
     return { type: "pipe", from: r.from, to: r.to, rIn: +R.toFixed(3), r: +(R + +(p.wall ?? 2)).toFixed(3) };
+  }
+  const o = meta.base.outline;
+  if (r.type === "obox" && o) {   // the exact face outline, pushed out (keep-out) or into the part (keep)
+    const d = role === "keepOut" ? +(p.depth ?? 5) : +(p.wall ?? 2);
+    return { type: "prism", origin: o.origin, normal: o.normal, xdir: o.xdir, tris: o.tris,
+      z0: role === "keepOut" ? 0 : -d, z1: role === "keepOut" ? d : 0 };
   }
   if (r.type === "obox") {
     if (role === "keepOut") {
@@ -354,11 +360,14 @@ const BODY = {
         ${p.watertight ? "closed" : "<b style='color:var(--bad)'>not closed</b> (inside and outside can be wrong; repair it in CAD)"}</span></p>
       ${p.notes.length ? `<p class="help">${p.notes.map(esc).join("<br>")}</p>` : ""}
       <fieldset><legend>Design space</legend>
-      <p class="help">Where material may go. Most parts: inside the model only.</p>
+      <p class="help">Where material may go. "Inside the model only" can only remove material. The other spaces
+        can also add material, for example to grow a part between bolt-on points you imported.</p>
       ${row("Space", `<select data-bind="designSpace.type" data-kind="ds" data-rerender>
         ${[["model", "Inside the model only"], ["hull", "Convex hull of the model"], ["bounds", "Bounding box of the model"], ["box", "A box I type in"]]
           .map(([v, t]) => `<option value="${v}" ${ds.type === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
       ${["hull", "bounds"].includes(ds.type) ? row("Margin around it, mm", num("designSpace.marginMM", ds.marginMM ?? 0, 'min="0" step="0.5"')) : ""}
+      ${ds.type !== "model" ? chk("designSpace.keepModel", !!ds.keepModel, "Keep the imported model as it is and grow material around it",
+        "Use this when the model holds only the interfaces (bosses, flanges, mounting faces). Mark holes as supports or loads so they stay open.") : ""}
       ${ds.type === "box" ? `
         <div class="row wide"><span class="quiet">Minimum corner x, y, z (mm)</span><div class="xyz">${[0, 1, 2].map(i => num(`designSpace.min.${i}`, (ds.min || p.bounds[0])[i], 'step="any"')).join("")}</div></div>
         <div class="row wide"><span class="quiet">Maximum corner x, y, z (mm)</span><div class="xyz">${[0, 1, 2].map(i => num(`designSpace.max.${i}`, (ds.max || p.bounds[1])[i], 'step="any"')).join("")}</div></div>` : ""}
@@ -480,6 +489,8 @@ const BODY = {
           ${[[1, "Voxel size"], [2, "2× finer"], [3, "3× finer (large files)"]].map(([v, t]) => `<option value="${v}" ${+out.upsample === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
         ${row("Surface level", `<input type="text" data-bind="output.isoLevel" data-kind="iso" value="${out.isoLevel ?? "auto"}" placeholder="auto">`,
           "auto keeps the optimized volume. A number from 0.1 to 0.9: lower gives thicker members.")}
+        ${chk("output.exactFeatures", !!out.exactFeatures, "Keep exact geometry at supports, loads and kept regions; cut keep-outs exactly",
+          "Bolt holes, flanges and faces you picked come out as in the model instead of smoothed.")}
         ${chk("output.report", out.report !== false, "Write an HTML report")}
         ${row("Also copy files to folder", `<input type="text" data-bind="output.copyTo" data-kind="text" value="${esc(out.copyTo || "")}" placeholder="optional">`)}
       </fieldset>
@@ -578,6 +589,7 @@ function anchorRow(a, i) {
     ${a.role === "fixed" ? `<div class="row"><span>Held in</span><span class="dofs">${"xyz".split("").map(d => `<label><input type="checkbox" data-dof="${i}" value="${d}" ${dofs.includes(d) ? "checked" : ""}> ${d.toUpperCase()}</label>`).join("")}</span></div>` : ""}
     ${a.role === "load" ? `<div class="help">Force in newtons, per load case</div>${forces}` : ""}
     <div class="row"><span>Keep material around, mm</span>${num(`anchors.${i}.freezeMM`, a.freezeMM, 'min="0" step="0.5" placeholder="auto"')}</div>
+    ${a.hole ? `<div class="row"><span>Room for the bolt head or nut at each end, mm</span>${num(`anchors.${i}.boltAccessMM`, a.boltAccessMM, 'min="0" step="1" placeholder="0"')}</div>` : ""}
     <details class="log"><summary>Region as numbers</summary><textarea data-region="anchors.${i}">${esc(JSON.stringify(a.region, null, 1))}</textarea></details>
   </div>`;
 }
@@ -651,16 +663,19 @@ async function onPick(ev) {
       resolution: typeof S.spec.resolution === "string" ? S.spec.resolution : "normal" });
   } catch (e) { toast(e.message, 6000); return; }
   const { role, index } = S.arm;
-  const meta = { label: res.label, kind: res.kind, faces: res.faces, normal: res.normal, centre: res.centre, base: { region: res.region, radius: res.radius } };
+  const meta = { label: res.label, kind: res.kind, faces: res.faces, normal: res.normal, centre: res.centre,
+    base: { region: res.region, radius: res.radius, outline: res.outline || null } };
   if (role === "fixed" || role === "load") {
     if (index != null) {
       const a = S.spec.anchors[index];
       a.region = res.region;
+      if (res.kind === "hole") a.hole = true; else delete a.hole;
       S.gui.anchors[index] = { ...S.gui.anchors[index], ...meta, custom: false };
     } else {
       const n = S.spec.anchors.filter(a => a.role === role).length + 1;
       const name = uniqueName(role === "fixed" ? (res.kind === "hole" ? `bolt-${n}` : `support-${n}`) : `load-${n}`);
-      S.spec.anchors.push({ name, role, ...(role === "fixed" ? { dofs: "xyz" } : {}), region: res.region });
+      S.spec.anchors.push({ name, role, ...(role === "fixed" ? { dofs: "xyz" } : {}), region: res.region,
+        ...(res.kind === "hole" ? { hole: true } : {}) });
       if (role === "load") {
         meta.forces = {};
         for (const c of cases()) meta.forces[c] = { mag: 100, dir: res.kind === "face" ? "into" : "-z" };
@@ -825,6 +840,11 @@ function wire() {
   const vp = $("#viewport");
   let down = null;
   vp.addEventListener("pointerdown", e => { down = [e.clientX, e.clientY]; });
+  vp.addEventListener("dblclick", e => { const h = viewer.pickAt(e); if (h) viewer.orbitAround(h.point); });
+  $("#panTool").addEventListener("click", e => {
+    const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+    e.currentTarget.setAttribute("aria-pressed", on); viewer.setPanMode(on);
+  });
   vp.addEventListener("pointerup", e => {
     if (down && Math.hypot(e.clientX - down[0], e.clientY - down[1]) < 5) onPick(e);
     down = null;

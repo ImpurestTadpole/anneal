@@ -57,6 +57,24 @@ try:
                            {"forces": {"down": {"mag": 2000, "dir": "-z"}, "side": {"mag": 600, "dir": "+y"}}}
                            for a in ex["anchors"]]
         gui0.setdefault("keepOut", []); gui0.setdefault("keep", [])
+        # server-side feature picks on the display mesh: a bolt hole and the flange's back face
+        import io, numpy as np, trimesh
+        dm = trimesh.load(io.BytesIO(urllib.request.urlopen(f"{base}/api/projects/{pid}/model.stl").read()), file_type="stl")
+        cc = dm.triangles_center
+        def api_pick(fi):
+            rq = urllib.request.Request(f"{base}/api/projects/{pid}/pick", method="POST", headers={"Content-Type": "application/json"},
+                                        data=json.dumps({"face": int(fi), "point": cc[fi].tolist(), "mode": "auto", "resolution": "normal"}).encode())
+            return json.load(urllib.request.urlopen(rq))
+        hole_f = int(np.argmin(np.abs(np.hypot(cc[:, 1] - 10, cc[:, 2] - 10) - 3.3) + 10 * (np.abs(cc[:, 0] - 5) > 4.5)))
+        ph = api_pick(hole_f)
+        check("clicking a bolt hole gives a hole", ph["kind"] == "hole" and abs(ph["radius"] - 3.3) < 0.05, ph["label"])
+        face_f = int(np.argmax((dm.face_normals[:, 0] < -0.99) * dm.area_faces))
+        pf = api_pick(face_f)
+        check("clicking a face gives the face and its outline", pf["kind"] == "face" and bool(pf.get("outline")), pf["label"])
+        # a keep-out pushed 5 mm out from that face, stored the way the app stores a pick
+        gui0["keepOut"] = [{"label": pf["label"], "kind": "face", "faces": pf["faces"], "normal": pf["normal"],
+                            "centre": pf["centre"], "base": {"region": pf["region"], "radius": None, "outline": pf["outline"]},
+                            "p": {"depth": 5}}]
         req = urllib.request.Request(f"{base}/api/projects/{pid}/save", method="POST",
                                      data=json.dumps({"spec": spec0, "gui": gui0}).encode(),
                                      headers={"Content-Type": "application/json"})
@@ -94,6 +112,9 @@ try:
         pg.wait_for_timeout(1500)
         pg.screenshot(path=os.path.join(wd, "gui_settings.png"), full_page=True)
         spec = json.load(urllib.request.urlopen(f"{base}/api/projects/{pid}"))["spec"]
+        ko = (spec.get("keepOut") or [{}])[0]
+        check("a face keep-out becomes the exact face outline (prism)", ko.get("type") == "prism" and ko.get("z1") == 5,
+              json.dumps({k: ko.get(k) for k in ("type", "z0", "z1")}))
         check("options saved to the project spec",
               spec.get("physics", {}).get("anisotropic") is True and spec.get("physics", {}).get("buckling") is True
               and spec["limits"].get("minBucklingFactor") == 2.5

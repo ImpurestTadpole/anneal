@@ -255,6 +255,29 @@ Ubuntu: `sudo apt install calculix-ccx` and `pip install gmsh`. Windows: `pip in
 CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its folder on the PATH or set
 `ANNEAL_CCX` to the full path of `ccx.exe`. Without them the check is skipped with a note; the run goes on.
 
+### Picking features, keeping geometry, and growing a part (0.4)
+
+- **Click a hole, a boss or a face.** Anneal recognises the feature, also on coarse STEP meshes where
+  a hole has only 6 to 12 facets. A hole picked as a support or load gets `"hole": true`: the hole
+  stays open, and `"boltAccessMM"` keeps room for the bolt head or nut at both ends.
+- **Keep-outs and keep regions follow the feature.** A keep-out picked on a face is that face's exact
+  outline pushed out by a depth (`"type": "prism"`); on a hole it is a cylinder with a clearance. A
+  "Keep a feature" region on a face or hole keeps that wall of the original part.
+- **Exact geometry** (`"output": {"exactFeatures": true}`, on for new projects in the app): the
+  exported part gets the model's exact geometry back at supports, loads and kept regions, and the
+  keep-outs are cut exactly. Bolt holes come out at their true diameter instead of smoothed.
+  Uses manifold3d (Apache-2.0).
+- **Does Anneal add or remove material?** It puts material where it helps, inside the design space.
+  With `"designSpace": "model"` it can only remove. With `bounds`, `hull` or `box` it can also add
+  material outside the original part.
+- **Grow a part from bolt-on points:** import a STEP that holds only the interfaces (mounting pads,
+  lugs, flanges), use `"designSpace": {"type": "bounds", "keepModel": true}`, pick the holes as
+  supports and loads, add keep-outs for neighbouring parts, and run. The interfaces are kept exactly
+  and material is added to join them. Example: `examples/interfaces.json` (model made by
+  `examples/make_interfaces.py`).
+- **Viewer:** drag turns the view; right drag, Shift + drag, the arrow keys or the *Move* button move
+  it; double-click turns the view around the clicked point.
+
 ### Limits and checks
 
 | Check | How it is measured |
@@ -409,7 +432,7 @@ Design rules carried over from the Phase 0 spike:
 | V8 print-aware stiffness and Hill strength | E and Ez exact; Hill = von Mises when strengths are equal |
 | V9 impact force on a bar | k = EA/L and F = √(2Ek) within 2 % and 1 % |
 
-Tests: `pip install pytest` then `python -m pytest -q` (42 tests, 15–25 minutes on 2 cores).
+Tests: `pip install pytest` then `python -m pytest -q` (52 tests, 25–35 minutes on 2 cores).
 `VERIFICATION.md` lists the release evidence: tests, gate, a bit-for-bit comparison with 0.3.0, and
 independent checks with CalculiX and PrusaSlicer.
 

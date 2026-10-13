@@ -40,8 +40,16 @@ def app(workspace=None, port=8765):
         webview = None
     if webview is not None:
         try:
-            webview.create_window("Anneal", url, width=1440, height=900, min_size=(960, 640))
-            webview.start()          # returns when the window is closed
+            set_app_id()
+            window = webview.create_window("Anneal", url, width=1440, height=900, min_size=(960, 640))
+            try:
+                window.events.shown += lambda: set_window_icon(window)
+            except Exception:
+                pass
+            try:
+                webview.start(icon=ICON_PNG)   # the icon argument is used by the GTK and Qt back ends
+            except TypeError:                  # older pywebview without the argument
+                webview.start()          # returns when the window is closed
             srv.shutdown()
             return 0
         except Exception as e:  # WebView2 missing or blocked: fall back to the browser
@@ -56,6 +64,41 @@ def app(workspace=None, port=8765):
         return 0
     finally:
         srv.shutdown()
+
+
+APP_ID = "Anneal.TopologyOptimizer"
+
+
+def set_app_id():
+    """Windows groups taskbar buttons by AppUserModelID. Without one, the Anneal window is grouped
+    under pythonw.exe and shows the Python icon. Must run before the first window opens."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        return True
+    except Exception as e:
+        print("Could not set the taskbar ID:", e)
+        return False
+
+
+def set_window_icon(window):
+    """Give the window (title bar and taskbar button) the Anneal icon. On Windows pywebview draws
+    with WinForms: set Form.Icon on the UI thread through pythonnet."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        form = getattr(window, "native", None)
+        if form is None:
+            return False
+        from System import Action                 # pythonnet, installed with pywebview on Windows
+        from System.Drawing import Icon
+        form.Invoke(Action(lambda: setattr(form, "Icon", Icon(ICON_ICO))))
+        return True
+    except Exception as e:
+        print("Could not set the window icon:", e)
+        return False
 
 
 def shortcut():

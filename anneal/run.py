@@ -249,6 +249,12 @@ def checks(prob, built, thick):
                         "limit": f"≥ {imin:g}",
                         "fix": "" if ok and ok_l else "Raise volumeFraction, add a load case with the peak force so the "
                                                       "optimizer builds for it, or choose a tougher material."})
+    ex = prob.derived.get("exactFeatures")
+    if ex is not None:
+        out.append({"name": "Exact geometry of kept features and keep-outs", "ok": True, "warn": "skipped" in ex,
+                    "value": "not applied" if "skipped" in ex else
+                    f"{len(ex['kept'])} kept, {len(ex['cut'])} cut",
+                    "limit": "–", "fix": ex.get("skipped", "")})
     if "nonlinear" in built:
         nl = built["nonlinear"]
         if "skipped" in nl:
@@ -371,6 +377,10 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         mesh = surface(g, f, level, upsample=int(prob.out_opts.get("upsample", 2)),
                        smooth=int(prob.out_opts.get("smoothing", 10)), log=log)
         log(f"  {len(mesh.faces):,} triangles, watertight: {mesh.is_watertight}")
+        from .finish import finish
+        mesh, exact = finish(prob, mesh, log)
+        if exact is not None:
+            prob.derived["exactFeatures"] = exact
         log("Re-solving the as-built part (voxelized from the exported surface)")
         fill_b = voxel_fill(mesh, g)
         fill_b = np.minimum(np.maximum(fill_b, np.where(prob.frozen, prob.fill, 0)), 1 - prob.void_fill)
@@ -454,7 +464,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         if "skipped" in built["nonlinear"]:
             log(f"  large-deformation check skipped: {built['nonlinear']['skipped']}")
     original = None
-    if prob.mesh is not None:
+    if prob.mesh is not None and getattr(prob, "keep_model", False):
+        log("  (the model holds only the interfaces, so it is not evaluated as a part on its own)")
+    elif prob.mesh is not None:
         try:
             orig_fill = prob.space_fill if prob.spec.get("designSpace", "model") == "model" else voxel_fill(prob.mesh, g)
             original = evaluate(prob, orig_fill, "Original model", log)

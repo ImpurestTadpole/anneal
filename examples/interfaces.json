@@ -1,0 +1,173 @@
+{
+  "name": "interfaces",
+  "model": "interfaces.step",
+  "designSpace": {
+    "type": "bounds",
+    "marginMM": 0,
+    "keepModel": true
+  },
+  "material": "AlSi10Mg-LPBF",
+  "resolution": "normal",
+  "anchors": [
+    {
+      "name": "bolt-1",
+      "role": "fixed",
+      "hole": true,
+      "freezeMM": 2,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          10,
+          8
+        ],
+        "to": [
+          6,
+          10,
+          8
+        ],
+        "r": 4.3,
+        "rIn": 2.3
+      },
+      "boltAccessMM": 15
+    },
+    {
+      "name": "bolt-2",
+      "role": "fixed",
+      "hole": true,
+      "freezeMM": 2,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          50,
+          8
+        ],
+        "to": [
+          6,
+          50,
+          8
+        ],
+        "r": 4.3,
+        "rIn": 2.3
+      },
+      "boltAccessMM": 15
+    },
+    {
+      "name": "bolt-3",
+      "role": "fixed",
+      "hole": true,
+      "freezeMM": 2,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          10,
+          32
+        ],
+        "to": [
+          6,
+          10,
+          32
+        ],
+        "r": 4.3,
+        "rIn": 2.3
+      },
+      "boltAccessMM": 15
+    },
+    {
+      "name": "bolt-4",
+      "role": "fixed",
+      "hole": true,
+      "freezeMM": 2,
+      "region": {
+        "type": "pipe",
+        "from": [
+          0,
+          50,
+          32
+        ],
+        "to": [
+          6,
+          50,
+          32
+        ],
+        "r": 4.3,
+        "rIn": 2.3
+      },
+      "boltAccessMM": 15
+    },
+    {
+      "name": "pin",
+      "role": "load",
+      "hole": true,
+      "freezeMM": 2,
+      "region": {
+        "type": "pipe",
+        "from": [
+          90,
+          20,
+          60
+        ],
+        "to": [
+          90,
+          40,
+          60
+        ],
+        "r": 5.0,
+        "rIn": 3.0
+      },
+      "loads": {
+        "down": [
+          0,
+          0,
+          -1500
+        ],
+        "side": [
+          0,
+          500,
+          0
+        ]
+      }
+    }
+  ],
+  "keepOut": [
+    {
+      "type": "box",
+      "min": [
+        30,
+        -1,
+        -1
+      ],
+      "max": [
+        70,
+        61,
+        14
+      ]
+    }
+  ],
+  "loadCases": {
+    "down": {
+      "weight": 1.0
+    },
+    "side": {
+      "weight": 1.0
+    }
+  },
+  "objective": {
+    "minimise": "mass",
+    "volumeFraction": 0.15,
+    "combine": "worst"
+  },
+  "optimizer": {
+    "iterations": 70
+  },
+  "limits": {
+    "maxDisplacementMM": 0.3,
+    "minSafetyFactor": 2.0
+  },
+  "output": {
+    "smoothing": 10,
+    "exactFeatures": true
+  }
+}

@@ -57,6 +57,24 @@ class Anchor:
             raise SpecError(f"{where}: give a 'region' (box, sphere, cylinder, pipe) or a 'feature' (bore, pad, boltCircle).")
         self.region = regions[0] if len(regions) == 1 else Union(regions)
         self.raw_region = "region" in d and "feature" not in d
+        self.region_dict = d.get("region") if self.raw_region else None
+        # "hole": true (set by the app when a hole is picked): the hole stays open, also where the
+        # design space would otherwise fill it (bounds, hull or box design spaces)
+        self.hole = bool(d.get("hole"))
+        if self.hole:
+            r = d.get("region") or {}
+            if r.get("type") != "pipe":
+                raise SpecError(f"{where}: \"hole\": true needs a pipe region (pick the hole wall).")
+            rh = (float(r["r"]) + float(r["rIn"])) / 2
+            a, b = np.asarray(r["from"], float), np.asarray(r["to"], float)
+            self.voids.append(Cylinder(a, b, rh))
+            # room for the bolt head, washer, nut or tool at both ends of the hole
+            acc = float(d.get("boltAccessMM", 0) or 0)
+            if acc > 0:
+                ax = (b - a) / np.linalg.norm(b - a)
+                rhead = float(d.get("boltHeadD", 3.6 * rh)) / 2
+                self.voids.append(Cylinder(a - ax * acc, a, rhead))
+                self.voids.append(Cylinder(b, b + ax * acc, rhead))
 
     def _feature(self, f, where):
         if not isinstance(f, dict) or len(f) != 1:
@@ -241,6 +259,11 @@ class Problem:
         solid_fill = np.zeros(grid.nelem)
         for s in solids:
             solid_fill = np.maximum(solid_fill, fill_fraction(s, centres, h))
+        self.keep_model = bool(ds.get("keepModel")) and dtype != "model"
+        if self.keep_model:   # grow from interfaces: the imported model is kept as it is
+            if self.mesh is None:
+                raise SpecError("designSpace keepModel needs a 'model' file.")
+            solid_fill = np.maximum(solid_fill, voxel_fill(self.mesh, grid))
         void_fill = np.zeros(grid.nelem)
         for v in voids:
             void_fill = np.maximum(void_fill, fill_fraction(v, centres, h))

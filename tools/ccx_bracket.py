@@ -51,7 +51,15 @@ ids = np.array(used)
 xyz = np.array([nodes[n] for n in used])
 mesh_s = time.time() - t0
 
-tol = 0.5  # mm: nodes within this distance of an anchor region
+from anneal.sidecar import load_weights, _material_cards, find_ccx
+CCX = find_ccx()
+prob.build()
+if prob.spec.get("physics", {}).get("anisotropic"):
+    from anneal.physics import material_D
+    prob.D, prob.derived["printAware"] = material_D(prob.material, prob.process)
+else:
+    prob.D = None
+tol = 0.5 * prob.grid.h  # nodes within half a voxel of an anchor region, as Anneal and the sidecar do
 sets, loads = {}, {}
 for a in prob.anchors:
     sel = ids[a.region.sdf(xyz) <= tol]
@@ -60,6 +68,9 @@ for a in prob.anchors:
     sets[a.name] = sel
     if a.role == "load":
         loads[a.name] = a.loads
+node_xyz = {int(n): x for n, x in zip(ids, xyz)}
+weights = {n: load_weights(elems, node_xyz, sets[n]) for n in loads}
+mat_cards, orient = _material_cards(prob)
 
 
 def deck(name, step):
@@ -68,12 +79,12 @@ def deck(name, step):
     L += ["*NSET,NSET=NALL"] + [",".join(map(str, ids[i:i + 12])) for i in range(0, len(ids), 12)]
     for s, v in sets.items():
         L += [f"*NSET,NSET={s.upper().replace('-', '_')}"] + [",".join(map(str, v[i:i + 12])) for i in range(0, len(v), 12)]
-    L += ["*MATERIAL,NAME=M", "*ELASTIC", f"{mat['E']},{mat['nu']}", "*SOLID SECTION,ELSET=EALL,MATERIAL=M", "*BOUNDARY"]
-    L += [f"{a.name.upper().replace('-', '_')},1,3" for a in prob.anchors if a.role == "fixed"]
+    L += mat_cards + [f"*SOLID SECTION,ELSET=EALL,MATERIAL=M{orient}", "*BOUNDARY"]
+    L += [f"{a.name.upper().replace('-', '_')},{d + 1},{d + 1}" for a in prob.anchors if a.role == "fixed" for d in a.dofs]
     L += step
     open(os.path.join(wd, f"{name}.inp"), "w").write("\n".join(L) + "\n")
     t = time.time()
-    subprocess.run(["ccx", "-i", name], cwd=wd, capture_output=True, text=True)
+    subprocess.run([CCX, "-i", name], cwd=wd, capture_output=True, text=True)
     return time.time() - t
 
 
@@ -82,11 +93,10 @@ def cload(case):
     for an, ld in loads.items():
         if case in ld:
             v = ld[case]
-            s = sets[an]
-            for n in s:
+            for n, wn in weights[an].items():
                 for d in range(3):
                     if v[d]:
-                        out.append(f"{n},{d + 1},{v[d] / s.size:.9g}")
+                        out.append(f"{n},{d + 1},{v[d] * wn:.9g}")
     return out
 
 

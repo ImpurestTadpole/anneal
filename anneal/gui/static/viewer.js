@@ -78,6 +78,9 @@ export class Viewer {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
+    this.controls.screenSpacePanning = true;
+    this.renderer.domElement.addEventListener("contextmenu", e => e.preventDefault());   // right drag moves the view
+    this.controls.listenToKeyEvents(window);                                            // arrow keys move the view
     this.overlay = new THREE.Group();
     this.scene.add(this.overlay);
     this.meshes = { model: null, result: null, ghost: null };
@@ -312,6 +315,18 @@ export class Viewer {
     }
   }
 
+  setPanMode(on) {
+    this.controls.mouseButtons.LEFT = on ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+    this.controls.touches.ONE = on ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE;
+  }
+
+  orbitAround(point) {   // turn around a clicked point instead of the part centre
+    const p = new THREE.Vector3(...point), d = p.clone().sub(this.controls.target);
+    this.camera.position.add(d);
+    this.controls.target.copy(p);
+    this.controls.update();
+  }
+
   region(reg, colorVar) {
     const color = cssColor(colorVar);
     const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide });
@@ -331,6 +346,31 @@ export class Viewer {
       const y = new THREE.Vector3().crossVectors(z, x);
       obj.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
       obj.position.copy(V(reg.center));
+    } else if (reg.type === "prism") {
+      // the picked face outline, extruded from z0 to z1 along the face normal
+      const z = V(reg.normal).normalize();
+      const x = V(reg.xdir).sub(z.clone().multiplyScalar(V(reg.xdir).dot(z))).normalize();
+      const y = new THREE.Vector3().crossVectors(z, x);
+      const pos = [], key = (a, b) => a < b ? a + "|" + b : b + "|" + a, cnt = new Map();
+      const P = (u, v, w) => [u, v, w];
+      for (const t of reg.tris) {
+        const q = [[t[0], t[1]], [t[2], t[3]], [t[4], t[5]]];
+        pos.push(...P(...q[0], reg.z1), ...P(...q[1], reg.z1), ...P(...q[2], reg.z1));
+        pos.push(...P(...q[0], reg.z0), ...P(...q[2], reg.z0), ...P(...q[1], reg.z0));
+        for (let i = 0; i < 3; i++) {
+          const a = q[i].map(v => v.toFixed(4)).join(","), b = q[(i + 1) % 3].map(v => v.toFixed(4)).join(",");
+          const k = key(a, b); cnt.set(k, (cnt.get(k) || []).concat([[q[i], q[(i + 1) % 3]]]));
+        }
+      }
+      for (const [, list] of cnt) if (list.length === 1) {
+        const [a, b] = list[0];
+        pos.push(...P(...a, reg.z0), ...P(...b, reg.z0), ...P(...b, reg.z1), ...P(...a, reg.z0), ...P(...b, reg.z1), ...P(...a, reg.z1));
+      }
+      g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      g.computeVertexNormals();
+      obj.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+      obj.position.copy(V(reg.origin));
     } else if (reg.type === "box") {
       const lo = V(reg.min), hi = V(reg.max);
       g = new THREE.BoxGeometry(...hi.clone().sub(lo).toArray());
