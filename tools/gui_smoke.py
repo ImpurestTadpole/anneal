@@ -58,6 +58,24 @@ def wait_project(pid, ok, timeout=8.0):
         time.sleep(0.2)
 
 
+def goal_smoke(pg, pid):
+    """0.4.2 goals: percent of the original part, saved in spec.goals; an empty field removes the key."""
+    open_in_page(pg, pid, step=2)
+    m = pg.locator('input[data-bind="goals.massPct"]')
+    check("goal step shows goals.massPct, displacementPct, strainPct",
+          m.count() == 1 and pg.locator('input[data-bind="goals.displacementPct"]').count() == 1
+          and pg.locator('input[data-bind="goals.strainPct"]').count() == 1)
+    m.fill("60"); m.dispatch_event("change")
+    sp = wait_project(pid, lambda p: (p["spec"].get("goals") or {}).get("massPct") == 60)["spec"]
+    check("goals.massPct saved", (sp.get("goals") or {}).get("massPct") == 60, json.dumps(sp.get("goals")))
+    open_in_page(pg, pid, step=2)
+    m = pg.locator('input[data-bind="goals.massPct"]')
+    check("goals.massPct holds after reload", m.input_value() == "60")
+    m.fill(""); m.dispatch_event("change")
+    sp = wait_project(pid, lambda p: not (p["spec"].get("goals") or {}).get("massPct"))["spec"]
+    check("an empty goal removes it", not (sp.get("goals") or {}).get("massPct"), json.dumps(sp.get("goals")))
+
+
 def torque_checks(pg, pid, stl):
     """0.4.1 torque load (PLAN 4A, T9): torque rows, maxRotationDeg, save and reload, old projects."""
     open_in_page(pg, pid, step=1)
@@ -365,6 +383,7 @@ try:
               json.dumps({k: spec.get(k) for k in ("physics", "impact", "limits")}))
         oid, ospec, ogui = torque_checks(pg, pid, stl)
         thermal_checks(pg, pid, oid, ospec, ogui)
+        goal_smoke(pg, pid)
         thermal_result_checks(pg, oid, ospec)
         library_thermal_checks(pg)
         pg.click("#navLibrary")

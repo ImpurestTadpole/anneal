@@ -21,6 +21,9 @@ RESOLUTION = {"draft": 15000, "normal": 40000, "fine": 90000}
 MIN_FILL = 0.05
 
 
+GOAL_KEYS = ("massPct", "displacementPct", "strainPct")
+
+
 class SpecError(ValueError):
     pass
 
@@ -186,6 +189,17 @@ class Problem:
         if not 0.03 <= self.vf <= 0.95:
             raise SpecError(f"objective.volumeFraction is {self.vf}. Give a value between 0.03 and 0.95 "
                             f"(0.3 keeps 30 % of the design space).")
+        self.goals = spec.get("goals") or {}
+        if not isinstance(self.goals, dict) or any(k not in GOAL_KEYS for k in self.goals):
+            raise SpecError(f"goals may hold only {', '.join(GOAL_KEYS)} (percent of the original part), "
+                            f"for example {{\"massPct\": 60, \"displacementPct\": 120}}.")
+        for k, v in self.goals.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not 1 <= v <= 1000:
+                raise SpecError(f"goals.{k} is {v!r}. Give a percent of the original part between 1 and 1000 "
+                                f"(60 = 60 % of the original).")
+        if self.goals and spec.get("keepModel"):
+            raise SpecError("goals compare with the original part, but keepModel says the model holds only the "
+                            "interfaces. Remove goals, or remove keepModel.")
         self.combine = obj.get("combine", "sum")
         if self.combine not in ("sum", "worst"):
             raise SpecError("objective.combine must be 'sum' (weighted total stiffness) or 'worst' (stiffest worst case).")

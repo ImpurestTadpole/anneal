@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from . import __version__
-from .problem import Problem
+from .problem import Problem, SpecError
 from .fem import FEM
 from .geometry import voxel_fill
 from .optimize import simp
@@ -561,6 +561,60 @@ def thermal_checks(prob, built, rows):
     return out
 
 
+def set_goals(prob, g, log):
+    """Goals in percent of the original part: solve the original first, then turn each goal into a target.
+    massPct sets the volume fraction; displacementPct sets limits.maxDisplacementMM (alone, it also asks
+    for the lightest part that meets it); strainPct is checked after the run (peak strain = peak stress / E)."""
+    if prob.mesh is None:
+        raise SpecError("goals compare with the original part, so they need a model (STL or STEP).")
+    log("Solving the original part for the goals")
+    orig_fill = prob.space_fill if prob.spec.get("designSpace", "model") == "model" else voxel_fill(prob.mesh, g)
+    original = evaluate(prob, orig_fill, "Original model", log)
+    G, t = prob.goals, {}
+    if "massPct" in G:
+        vf = G["massPct"] / 100 * float(orig_fill.sum()) / float(prob.fill.sum())
+        frz = float((prob.fill * prob.frozen).sum()) / float(prob.fill.sum())
+        if not 0.03 <= vf <= 0.95 or vf < frz:
+            raise SpecError(f"goals.massPct {G['massPct']} % gives a volume fraction of {vf:.3f}. It must be between "
+                            f"{max(0.03, frz):.3f} (frozen material) and 0.95. Change massPct or the design space.")
+        prob.vf = vf
+        if prob.spec.get("objective", {}).pop("minimise", None):
+            log("  goals.massPct fixes the mass, so the lightest-part search is off")
+        t["massG"] = original["massG"] * G["massPct"] / 100
+    if "displacementPct" in G:
+        prob.limits["maxDisplacementMM"] = original["maxDisplacementMM"] * G["displacementPct"] / 100
+        t["maxDisplacementMM"] = prob.limits["maxDisplacementMM"]
+        if "massPct" not in G:
+            prob.spec.setdefault("objective", {})["minimise"] = "mass"
+    if "strainPct" in G:
+        t["peakStrain"] = original["peakStressMPa"] / prob.material["E"] * G["strainPct"] / 100
+    prob.derived["goals"] = {"percent": dict(G), "original": {k: original[k] for k in
+                             ("massG", "maxDisplacementMM", "peakStressMPa")}, "targets": t}
+    log("  goals: " + ", ".join(f"{k} {v:.4g}" for k, v in t.items()))
+    return original
+
+
+def goal_checks(prob, built, original):
+    """One check row per goal: the result in percent of the original part against the goal."""
+    rows = []
+    for key, name, val, ref in (
+            ("massPct", "Goal: mass", built["massG"], original["massG"]),
+            ("displacementPct", "Goal: maximum displacement", built["maxDisplacementMM"], original["maxDisplacementMM"]),
+            ("strainPct", "Goal: peak strain (peak stress / E)", built["peakStressMPa"], original["peakStressMPa"])):
+        if key not in prob.goals:
+            continue
+        pct = 100 * val / ref if ref > 0 else float("inf")
+        goal = prob.goals[key]
+        ok = pct <= goal * 1.02 if key == "massPct" else pct <= goal
+        fix = {"massPct": "Raise the voxel resolution or lower freezeMM; frozen and kept material adds mass.",
+               "displacementPct": "Raise goals.massPct, or remove it so Anneal finds the lightest part that meets it.",
+               "strainPct": "Raise goals.massPct, add material near the peak stress, or raise goals.strainPct."}[key]
+        rows.append({"name": name, "ok": bool(ok), "group": "goals",
+                     "value": f"{pct:.1f} % of the original ({val:.4g} vs {ref:.4g})",
+                     "limit": f"<= {goal:g} %", "fix": "" if ok else fix})
+    return rows
+
+
 def next_volume_fraction(passes, limit, tol=0.01):
     """Bracketed log-log secant search for the lightest volume fraction that meets the limit.
     Returns None to stop."""
@@ -709,6 +763,7 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         return {"vf": vf, "res": res, "x": x, "f": f, "level": level, "mesh": mesh,
                 "fill_b": fill_b, "built": built, "thick": thick}
 
+    original = set_goals(prob, g, log) if prob.goals else None
     target = prob.limits.get("maxDisplacementMM")
     minimise_mass = prob.spec.get("objective", {}).get("minimise") == "mass" and target
     max_passes = int(opt.get("massPasses", 5)) if minimise_mass else 1
@@ -795,8 +850,9 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
             built["nonlinear"] = {"skipped": f"CalculiX check failed: {e}"}
         if "skipped" in built["nonlinear"]:
             log(f"  large-deformation check skipped: {built['nonlinear']['skipped']}")
-    original = None
-    if prob.mesh is not None and getattr(prob, "keep_model", False):
+    if original is not None:
+        pass   # already solved for the goals
+    elif prob.mesh is not None and getattr(prob, "keep_model", False):
         log("  (the model holds only the interfaces, so it is not evaluated as a part on its own)")
     elif prob.mesh is not None:
         try:
@@ -805,6 +861,8 @@ def run(spec_path, out_dir=None, log=print, db_path=None):
         except Exception as e:
             log(f"  original model not evaluated: {e}")
     chk = checks(prob, built, thick)
+    if prob.goals:
+        chk += goal_checks(prob, built, original)
     from .dfm import assess
     dfm_checks, dfm_summary = assess(prob, mesh, fill_b, built, thick)
     chk += dfm_checks

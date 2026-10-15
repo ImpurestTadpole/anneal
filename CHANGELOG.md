@@ -2,6 +2,9 @@
 
 ## 0.4.2
 
+- Goals: `goals.massPct`, `goals.displacementPct`, `goals.strainPct` set the result as a percent of the original part. Each goal has a check row. GUI: "Goals, % of the original part" in step 3.
+- Fix: the run no longer stops when exact geometry cuts off a support or load; it uses the smooth surface and says why.
+
 New: temperature. The as-built check includes material derating and thermal stress.
 
 - Spec: `thermal: {"referenceTempC": 20, "cases": {"caseName": tempC}}`. Temperatures in °C. A case

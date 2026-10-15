@@ -433,6 +433,25 @@ CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its f
 - **Viewer:** drag turns the view; right drag, Shift + drag, the arrow keys or the *Move* button move
   it; double-click turns the view around the clicked point.
 
+### Goals (percent of the original part)
+
+Use `goals` to set the result as a percent of the original part. Anneal solves the original part
+first. Then it changes each goal into a target.
+
+```json
+"goals": { "massPct": 60, "displacementPct": 120, "strainPct": 100 }
+```
+
+| Key | Meaning |
+|---|---|
+| `massPct` | Mass of the result, % of the original. It sets the volume fraction and turns the lightest-part search off. |
+| `displacementPct` | Largest displacement, % of the original. It sets `limits.maxDisplacementMM`. Without `massPct`, Anneal finds the lightest part that meets it. |
+| `strainPct` | Peak strain (peak stress / E), % of the original. Anneal checks it after the run. The optimizer does not use it. |
+
+- Each goal gets a check row "Goal: …" with the result in % of the original.
+- Goals need a model (STL or STEP). They do not work with `keepModel`, because then the model holds only the interfaces.
+- The mass of the result also includes frozen and kept material, so it can be a little above `massPct`.
+
 ### Limits and checks
 
 | Check | How it is measured |

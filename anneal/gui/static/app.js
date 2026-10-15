@@ -627,6 +627,15 @@ const BODY = {
           <option value="worst" ${sp.objective.combine === "worst" ? "selected" : ""}>Stiffest in the worst case</option>
           <option value="sum" ${sp.objective.combine === "sum" ? "selected" : ""}>Stiffest on weighted average</option></select>`) : ""}
       </fieldset>
+      <fieldset id="goalFields"><legend>Goals, % of the original part</legend>
+        <p class="help">Anneal solves the original part first. Each goal is a percent of its value. Leave empty for no goal.</p>
+        ${row("Mass, %", num("goals.massPct", (sp.goals || {}).massPct, 'min="1" max="1000" step="any" placeholder="for example 60"'),
+          "Sets how much material stays. It replaces the volume fraction.")}
+        ${row("Maximum displacement, %", num("goals.displacementPct", (sp.goals || {}).displacementPct, 'min="1" max="1000" step="any" placeholder="for example 120"'),
+          "Sets the displacement limit. Without a mass goal, Anneal finds the lightest part that meets it.")}
+        ${row("Peak strain, %", num("goals.strainPct", (sp.goals || {}).strainPct, 'min="1" max="1000" step="any" placeholder="for example 100"'),
+          "Peak strain is peak stress / E. Anneal checks it after the run.")}
+      </fieldset>
       <fieldset><legend>Limits</legend>
         ${row("Maximum displacement, mm", num("limits.maxDisplacementMM", sp.limits.maxDisplacementMM, `min="0" step="any" ${mass ? "required" : ""}`),
           mass ? "Needed for the lightest-part goal." : "Leave empty for no limit.")}
@@ -1140,7 +1149,7 @@ function wire() {
 // ------------------------------------------------------------------ jobs
 async function startJob(kind) {
   sync();
-  if (kind === "run" && S.spec.objective.minimise === "mass" && !S.spec.limits.maxDisplacementMM) {
+  if (kind === "run" && S.spec.objective.minimise === "mass" && !S.spec.limits.maxDisplacementMM && !(S.spec.goals || {}).displacementPct) {
     toast("The lightest-part goal needs a maximum displacement (step 3)."); S.open = 2; return render();
   }
   try {
