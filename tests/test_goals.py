@@ -37,3 +37,23 @@ def test_goals_end_to_end_sharp_exact(tmp_path):
     assert set(rows) == {"Goal: mass", "Goal: maximum displacement", "Goal: peak strain (peak stress / E)"}
     mass_pct = 100 * rec["results"]["optimized"]["massG"] / g["original"]["massG"]
     assert 35 < mass_pct < 60          # 45 % of the original, plus frozen and exact kept material
+
+
+def test_add_only_keeps_the_model(tmp_path):
+    """Material change "add": the model is kept as it is; material only grows around it."""
+    import numpy as np
+    import trimesh
+    from anneal.run import run
+    spec = tmp_path / "add.json"
+    spec.write_text(json.dumps(_bracket(designSpace={"type": "hull", "marginMM": 3, "keepModel": True},
+                                        objective={"volumeFraction": 0.55}, goals={"displacementPct": 100})))
+    rec, _ = run(str(spec), str(tmp_path / "out"), log=lambda *a: None)
+    orig = trimesh.load(os.path.join(EX, "bracket.stl"))
+    out = trimesh.load(next(p for p in (tmp_path / "out").iterdir() if p.name.endswith("-optimized.stl")))
+    from anneal.fem import Grid
+    from anneal.geometry import voxel_fill
+    h = 1.0
+    g = Grid(np.ceil((orig.extents + 4 * h) / h).astype(int), h, orig.bounds[0] - 2 * h)
+    fo, fr = voxel_fill(orig, g), voxel_fill(out, g)
+    assert (fr[fo > 0.5] > 0.5).mean() > 0.97           # the original part stays inside the result
+    assert rec["results"]["optimized"]["massG"] >= 0.97 * rec["derived"]["goals"]["original"]["massG"]

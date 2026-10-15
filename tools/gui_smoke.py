@@ -74,6 +74,14 @@ def goal_smoke(pg, pid):
     m.fill(""); m.dispatch_event("change")
     sp = wait_project(pid, lambda p: not (p["spec"].get("goals") or {}).get("massPct"))["spec"]
     check("an empty goal removes it", not (sp.get("goals") or {}).get("massPct"), json.dumps(sp.get("goals")))
+    open_in_page(pg, pid, step=0)                     # material change: remove / add / add and remove
+    want = {"add": lambda d: isinstance(d, dict) and d.get("keepModel") is True,
+            "both": lambda d: isinstance(d, dict) and not d.get("keepModel"),
+            "remove": lambda d: d == "model"}
+    for v, ok in want.items():
+        pg.select_option("#matChange", v)
+        d = wait_project(pid, lambda p: ok(p["spec"].get("designSpace")))["spec"].get("designSpace")
+        check(f"material change '{v}' sets the design space", ok(d), json.dumps(d))
 
 
 def torque_checks(pg, pid, stl):

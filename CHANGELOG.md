@@ -2,6 +2,8 @@
 
 ## 0.4.2
 
+- GUI: "Material change" (remove only, add only, add and remove) in step 1. It sets the design space.
+
 - Goals: `goals.massPct`, `goals.displacementPct`, `goals.strainPct` set the result as a percent of the original part. Each goal has a check row. GUI: "Goals, % of the original part" in step 3.
 - Fix: the run no longer stops when exact geometry cuts off a support or load; it uses the smooth surface and says why.
 

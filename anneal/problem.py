@@ -197,9 +197,6 @@ class Problem:
             if not isinstance(v, (int, float)) or isinstance(v, bool) or not 1 <= v <= 1000:
                 raise SpecError(f"goals.{k} is {v!r}. Give a percent of the original part between 1 and 1000 "
                                 f"(60 = 60 % of the original).")
-        if self.goals and spec.get("keepModel"):
-            raise SpecError("goals compare with the original part, but keepModel says the model holds only the "
-                            "interfaces. Remove goals, or remove keepModel.")
         self.combine = obj.get("combine", "sum")
         if self.combine not in ("sum", "worst"):
             raise SpecError("objective.combine must be 'sum' (weighted total stiffness) or 'worst' (stiffest worst case).")

@@ -538,6 +538,10 @@ const BODY = {
       <fieldset><legend>Design space</legend>
       <p class="help">Where material may go. "Inside the model only" can only remove material. The other spaces
         can also add material, for example to grow a part between bolt-on points you imported.</p>
+      ${row("Material change", `<select id="matChange" data-bind="designSpace" data-kind="mc" data-rerender>
+        ${[["remove", "Remove material only"], ["add", "Add material only (keep the model)"], ["both", "Add and remove material"]]
+          .map(([v, t]) => `<option value="${v}" ${(ds.type === "model" ? "remove" : ds.keepModel ? "add" : "both") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`,
+        "Remove: the part gets lighter inside its own shape. Add: the model stays and material grows around it. Add and remove: both, inside the space below.")}
       ${row("Space", `<select data-bind="designSpace.type" data-kind="ds" data-rerender>
         ${[["model", "Inside the model only"], ["hull", "Convex hull of the model"], ["bounds", "Bounding box of the model"], ["box", "A box I type in"]]
           .map(([v, t]) => `<option value="${v}" ${ds.type === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
@@ -865,7 +869,12 @@ function onInput(el, live) {
   const root = isGui ? S.gui : S.spec;
   if (el.dataset.live) $("#" + el.dataset.live).textContent = Math.round(v * 100) + " %";
   if (live && el.type !== "range") return true;
-  if (kind === "ds") {
+  if (kind === "mc") {             // material change: remove = inside the model; add/both = a grown space
+    const cur = typeof S.spec.designSpace === "object" ? S.spec.designSpace : null;
+    if (v === "remove") S.spec.designSpace = "model";
+    else S.spec.designSpace = { ...(cur || { type: "hull", marginMM: 5 }), keepModel: v === "add" };
+    if (v !== "add" && S.spec.designSpace.keepModel === false) delete S.spec.designSpace.keepModel;
+  } else if (kind === "ds") {
     const p = S.project;
     if (v === "model") S.spec.designSpace = "model";
     else if (v === "box") S.spec.designSpace = { type: "box", min: p.bounds[0].map(x => +x.toFixed(2)), max: p.bounds[1].map(x => +x.toFixed(2)) };

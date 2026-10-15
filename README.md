@@ -433,6 +433,20 @@ CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its f
 - **Viewer:** drag turns the view; right drag, Shift + drag, the arrow keys or the *Move* button move
   it; double-click turns the view around the clicked point.
 
+### Material change: remove, add, or both
+
+The optimizer can remove material, add material, or do both. The app has a "Material change" control
+in step 1. In a spec, the design space sets it:
+
+| Material change | Spec |
+|---|---|
+| Remove only | `"designSpace": "model"` |
+| Add only (the model stays as it is) | `"designSpace": {"type": "hull", "marginMM": 5, "keepModel": true}` |
+| Add and remove | `"designSpace": {"type": "hull", "marginMM": 5}` |
+
+`marginMM` sets how far material can grow past the model. `bounds` (the bounding box) or `box` can
+replace `hull`.
+
 ### Goals (percent of the original part)
 
 Use `goals` to set the result as a percent of the original part. Anneal solves the original part
@@ -449,7 +463,7 @@ first. Then it changes each goal into a target.
 | `strainPct` | Peak strain (peak stress / E), % of the original. Anneal checks it after the run. The optimizer does not use it. |
 
 - Each goal gets a check row "Goal: …" with the result in % of the original.
-- Goals need a model (STL or STEP). They do not work with `keepModel`, because then the model holds only the interfaces.
+- Goals need a model (STL or STEP).
 - The mass of the result also includes frozen and kept material, so it can be a little above `massPct`.
 
 ### Limits and checks
