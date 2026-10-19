@@ -418,10 +418,14 @@ CalculiX for Windows (`ccx.exe` with its DLLs) from www.dhondt.de, and put its f
 - **Keep-outs and keep regions follow the feature.** A keep-out picked on a face is that face's exact
   outline pushed out by a depth (`"type": "prism"`); on a hole it is a cylinder with a clearance. A
   "Keep a feature" region on a face or hole keeps that wall of the original part.
-- **Exact geometry** (`"output": {"exactFeatures": true}`, on for new projects in the app): the
+- **Exact geometry** (`"output": {"exactFeatures": true}`, on by default since 0.4.2; `false` turns it off): the
   exported part gets the model's exact geometry back at supports, loads and kept regions, and the
   keep-outs are cut exactly. Bolt holes come out at their true diameter instead of smoothed.
   Uses manifold3d (Apache-2.0).
+- **Edges** (`"output": {"edges": "sharp"}`, the default since 0.4.2; `"smooth"` gives the older organic
+  surface): sharp edges keep the flat faces and crisp edges of the original part where the result meets
+  its surface. On the example bracket, 47 % of the result's surface lies on the original with sharp edges,
+  16 % with smooth edges, at the same safety factor. `output.detail` (coarse, normal, fine) sets the mesh detail.
 - **Does Anneal add or remove material?** It puts material where it helps, inside the design space.
   With `"designSpace": "model"` it can only remove. With `bounds`, `hull` or `box` it can also add
   material outside the original part.

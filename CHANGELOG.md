@@ -2,6 +2,8 @@
 
 ## 0.4.2
 
+- Default surface: sharp edges and exact geometry (`output.edges: "sharp"`, `output.exactFeatures: true`). Set `"edges": "smooth"` and `"exactFeatures": false` for the 0.4.0 surface. `examples/bracket.json` and the golden tests pin the 0.4.0 surface, so they still compare with earlier releases.
+
 - GUI: "Material change" (remove only, add only, add and remove) in step 1. It sets the design space.
 
 - Goals: `goals.massPct`, `goals.displacementPct`, `goals.strainPct` set the result as a percent of the original part. Each goal has a check row. GUI: "Goals, % of the original part" in step 3.

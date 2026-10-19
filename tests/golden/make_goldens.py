@@ -18,6 +18,9 @@ def measure(spec_name, element):
     with open(os.path.join(HERE, spec_name)) as fh:
         spec = json.load(fh)
     spec.setdefault("solver", {})["element"] = element
+    out = spec.setdefault("output", {})          # goldens keep the 0.4.0 surface (defaults changed in 0.4.2)
+    out.setdefault("edges", "smooth")
+    out.setdefault("exactFeatures", False)
     with tempfile.TemporaryDirectory() as d:
         p = os.path.join(d, os.path.basename(spec_name))
         spec["model"] = os.path.join(HERE, spec["model"]) if "model" in spec else None

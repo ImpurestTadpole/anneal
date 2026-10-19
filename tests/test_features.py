@@ -78,7 +78,10 @@ def _small_spec(tmp_path, **over):
 
 
 def _hole_radii(m, centre_xy, z0, z1):
-    v = m.vertices
+    """Radii of the hole-wall vertices (vertices of faces with a horizontal normal; flat top and
+    bottom faces, which sharp edges keep, are not part of the wall)."""
+    wall = np.unique(m.faces[np.abs(m.face_normals[:, 2]) < 0.1])
+    v = m.vertices[wall]
     sel = (v[:, 2] > z0 - 0.01) & (v[:, 2] < z1 + 0.01)
     d = np.hypot(v[sel, 0] - centre_xy[0], v[sel, 1] - centre_xy[1])
     return d[d < 3.5]
@@ -96,10 +99,14 @@ def test_exact_features_restore_the_hole(tmp_path):
     assert any(c["name"].startswith("Exact geometry") and c["ok"] for c in rec["checks"])
 
 
-def test_exact_features_off_by_default_in_spec_files(tmp_path):
+def test_exact_features_on_by_default_in_spec_files(tmp_path):
+    """0.4.2: exact geometry and sharp edges are the default; exactFeatures false turns it off."""
     from anneal.run import run
     p = _small_spec(tmp_path, output={"report": False, "formats": ["stl"]})
     rec, _ = run(p, str(tmp_path / "out"), log=lambda *a: None, db_path=False)
+    assert "bolt" in rec["derived"]["exactFeatures"]["kept"]
+    p = _small_spec(tmp_path, output={"report": False, "formats": ["stl"], "exactFeatures": False})
+    rec, _ = run(p, str(tmp_path / "out2"), log=lambda *a: None, db_path=False)
     assert "exactFeatures" not in rec["derived"]
 
 

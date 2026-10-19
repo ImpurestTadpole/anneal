@@ -71,7 +71,7 @@ def _clean(m):
 
 def finish(prob, surf, log=print):
     """Return (mesh, info). info is None when the option is off."""
-    if not prob.out_opts.get("exactFeatures"):
+    if not prob.out_opts.get("exactFeatures", True):
         return surf, None
     info = {"kept": [], "cut": []}
     try:

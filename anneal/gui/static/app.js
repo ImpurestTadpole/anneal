@@ -78,7 +78,7 @@ function defaultSpec(p) {
     optimizer: { iterations: 70, massPasses: 5, penalty: 3, move: 0.2, sharpness: 4 },
     limits: { maxDisplacementMM: +(diag / 500).toPrecision(2), minSafetyFactor: 2 },
     loadPaths: { guard: true, margin: 0.1, maxDrop: 0.15, repair: true },
-    output: { formats: ["stl", "3mf"], edges: "smooth", detail: "normal", isoLevel: "auto", report: true, exactFeatures: true },
+    output: { formats: ["stl", "3mf"], edges: "sharp", detail: "normal", isoLevel: "auto", report: true, exactFeatures: true },
   };
 }
 function cases() { return Object.keys(S.spec.loadCases || { main: {} }); }
@@ -686,17 +686,17 @@ const BODY = {
           solid body in SolidWorks, Fusion and FreeCAD (faceted; needs the STEP add-on).</p>
         ${out.formats.includes("step") ? row("STEP faces", num("output.stepFaces", out.stepFaces ?? 20000, 'min="1000" step="1000" data-kind="int"'), "Fewer faces = smaller file. 20 000 keeps the shape within a fraction of a millimetre.") : ""}
         ${row("Edges", `<select data-bind="output.edges" data-kind="text" data-rerender>
-          ${[["smooth", "Smooth (organic)"], ["sharp", "Sharp (flat outer faces, crisp edges)"]].map(([v, t]) => `<option value="${v}" ${(out.edges || "smooth") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`,
+          ${[["smooth", "Smooth (organic)"], ["sharp", "Sharp (flat outer faces, crisp edges)"]].map(([v, t]) => `<option value="${v}" ${(out.edges || "sharp") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`,
           "Sharp keeps the design space's outer faces and edges exact: use it for machined or flat-sided parts.")}
         ${row("Surface detail", `<select data-bind="output.detail" data-kind="text" data-rerender>
           ${[["coarse", "Coarse (small files, fast)"], ["normal", "Normal"], ["fine", "Fine (crisp detail, large files)"]].map(([v, t]) => `<option value="${v}" ${(out.detail || "normal") === v ? "selected" : ""}>${t}</option>`).join("")}</select>`)}
         <details class="log"><summary>Custom surface values</summary>
-        ${row("Smoothing passes", num("output.smoothing", out.smoothing, `min="0" max="60" data-kind="int" placeholder="${SURF[out.detail || "normal"][out.edges || "smooth"][1]} (preset)"`))}
-        ${row("Upsampling", num("output.upsample", out.upsample, `min="1" max="4" data-kind="int" placeholder="${SURF[out.detail || "normal"][out.edges || "smooth"][0]} (preset)"`), "Leave empty to use the preset above.")}
+        ${row("Smoothing passes", num("output.smoothing", out.smoothing, `min="0" max="60" data-kind="int" placeholder="${SURF[out.detail || "normal"][out.edges || "sharp"][1]} (preset)"`))}
+        ${row("Upsampling", num("output.upsample", out.upsample, `min="1" max="4" data-kind="int" placeholder="${SURF[out.detail || "normal"][out.edges || "sharp"][0]} (preset)"`), "Leave empty to use the preset above.")}
         </details>
         ${row("Surface level", `<input type="text" data-bind="output.isoLevel" data-kind="iso" value="${out.isoLevel ?? "auto"}" placeholder="auto">`,
           "auto keeps the optimized volume. A number from 0.1 to 0.9: lower gives thicker members.")}
-        ${chk("output.exactFeatures", !!out.exactFeatures, "Keep exact geometry at supports, loads and kept regions; cut keep-outs exactly",
+        ${chk("output.exactFeatures", out.exactFeatures !== false, "Keep exact geometry at supports, loads and kept regions; cut keep-outs exactly",
           "Bolt holes, flanges and faces you picked come out as in the model instead of smoothed.")}
         ${chk("output.report", out.report !== false, "Write an HTML report")}
         ${chk("output.advanced", !!out.advanced, "Advanced output: graphs and how the part works",

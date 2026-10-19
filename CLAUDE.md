@@ -70,7 +70,7 @@ python tools/gui_smoke.py             # Playwright, headless Chromium
 
 1. `python -m anneal validate` → 10 of 10.
 2. Full pytest passes, golden tests included.
-3. Regression: `examples/bracket.json` with `"solver": {"element": "hex8fi"}` gives the same STL,
+3. Regression: `examples/bracket.json` (it pins `edges: "smooth"`, `exactFeatures: false`) with `"solver": {"element": "hex8fi"}` gives the same STL,
    density and field SHA-256, mass, displacement and safety factor as 0.3.0 (bit for bit).
 4. Physics run (`examples/bracket-pla.json`), interfaces run (`examples/interfaces.json`), CalculiX
    cross-check, GUI smoke test.

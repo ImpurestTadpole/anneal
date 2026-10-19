@@ -161,7 +161,7 @@ DETAIL = {"coarse": {"smooth": (1, 12), "sharp": (1, 3)},
 
 
 def surface_settings(out_opts):
-    edges = str(out_opts.get("edges", "smooth")).lower()
+    edges = str(out_opts.get("edges", "sharp")).lower()
     detail = str(out_opts.get("detail", "normal")).lower()
     if edges not in ("smooth", "sharp"):
         raise ValueError(f"output.edges '{edges}' is unknown. Use 'smooth' or 'sharp'.")
