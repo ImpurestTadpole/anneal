@@ -14,6 +14,7 @@
 | `research/deepseek-physics-review.md` | background | external physics review (status in `PLAN.md` section 6) |
 | `GUI.md` | everyone | screenshots of the app and the logo |
 | `../VERIFICATION.md` | release | evidence for one release (made by `tools/prove_release.py`) |
-| `../README.md` | users | install, options, every spec key |
+| `../README.md` | users | short overview: what Anneal does, example result, quick start, links |
+| `USER-GUIDE.md` | users | full manual: install, options, every spec key, limits |
 
 Base truth: the `master` branch. Plans and unreleased work: `release-*` branches.

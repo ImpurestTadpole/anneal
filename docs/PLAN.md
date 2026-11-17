@@ -110,7 +110,7 @@ File ownership between agents (this prevents merge conflicts):
 |---|---|
 | startup-windows | `anneal/gui/desktop.py`, `anneal/gui/__init__.py`, `anneal/__main__.py`, start-up paths in `anneal/cli.py`, `*.bat`, `install_*.sh/.bat`, `pyproject.toml`, `requirements.txt`, `tests/test_startup.py` |
 | solver-verifier | `anneal/*.py` except the files above and `anneal/gui/`, `tests/` except GUI and start-up tests, `tools/prove_release.py`, `tools/write_verification.py` |
-| gui-docs | `anneal/gui/static/*`, `anneal/gui/server.py`, `tools/gui_smoke.py`, `tests/test_gui.py`, `README.md` |
+| gui-docs | `anneal/gui/static/*`, `anneal/gui/server.py`, `tools/gui_smoke.py`, `tests/test_gui.py`, `README.md`, `docs/USER-GUIDE.md` |
 
 ---
 

@@ -22,6 +22,10 @@ The owner wants most explanations in plain technical English (ASD-STE100 / ISO 2
 sentences, active voice, one instruction per sentence, defined terms. Use the same style in the
 README and in user-facing messages.
 
+`README.md` is the short front page. The full manual (every spec key, option and check) is
+`docs/USER-GUIDE.md`. Where the plan or work list says "README" for a spec key or option, edit the
+user guide.
+
 ## Branches and rules
 
 - `master` = 0.3.0 (commit 17a3e31). It changes ONLY by a merge that has full proof (see "Proof").
